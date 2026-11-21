@@ -43,3 +43,41 @@ hashes, source frames, split, translation, rejected windows and FK statistics.
 `contacts_validation.json` and `CONTACTS.sha256` record the completed official
 label checks. Use the held-out metadata for evaluation and report it separately
 from training clips.
+
+## Simulation pipeline
+
+`pipeline.py` defaults to printing a plan. `pipeline.example.json` describes
+Stage 1 (30,000 iterations), Stage 2 (10,000), Stage 3 Flat (10,000), native
+goal evaluation, bundle parity, replay, and deployment MuJoCo checks. It never
+starts hardware control. Copy the example to the run area and check its absolute
+paths before execution:
+
+```bash
+python tools/acp_g1/pipeline.py --config /absolute/path/pipeline.json
+python tools/acp_g1/pipeline.py --config /absolute/path/pipeline.json --execute
+```
+
+`--execute --once` makes one scheduling pass, suitable for a monitor. Restarting
+with the same config/state directory observes the child PID and exit receipt;
+it does not duplicate a live or completed child. `status.json`, per-step logs,
+process receipts, checkpoint hashes and evaluation reports remain in
+`state_dir`. Configuration changes require a new state directory to prevent old
+receipts from being applied silently to different work.
+
+For an already-running Stage 1 launched outside the controller, put an `attach`
+object in stage `1`, with its actual `pid`, `log`, and the absolute
+`<run_dir>/exit_status.json` path as `exit_file`. A completed external run needs
+the successful exit receipt. A checkpoint alone is insufficient evidence.
+
+Each tracker stage is evaluated on GPU 1 in both paper and robust modes, on all
+training and held-out windows separately. Gates use each original source's mean
+window success, then average equally across original sources. Defaults require
+train paper/robust success of 0.9/0.8 and holdout paper/robust success of 0.8/0.7.
+Missing cohorts, overlapping source hashes, missing sidecars, nonzero exits or
+failed thresholds stop the controller with `needs_attention`.
+
+The evaluation script loads actor/planner/normalizer and builds only the live
+state reader and analytic metrics. It does not resume the training world model
+or optimizer; paper evaluation deliberately disables DR, whose context encoding
+differs from training. Saved actor configurations, explicit seeds and metadata
+hashes are retained in the evaluation path.
