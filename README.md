@@ -52,6 +52,12 @@ analytic `geoms.yaml`). The datasets are not released with this branch.
 
 ## Usage
 
+The `train/acp-g1` worktree adds a reproducible flat-ground deployment workflow:
+[PHP example conversion, contact labels and training gates](tools/acp_g1/README.md).
+Its separate `Instinct-ACP-Stage3-Flat-G1-v1` task retains the ACP inference
+contract while training reaching, turning and stopping on flat ground. The
+original multi-terrain tasks below remain available.
+
 ```bash
 uv run instinct-train Instinct-ACP-Track-G1-v1                                   # Stage 1
 uv run instinct-train Instinct-ACP-Stage2-G1-v1 --agent.load-run <stage1 run dir> --agent.load-checkpoint model_<it>.pt

@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Reproducible ACP training, smoke, preflight and same-stage resume.
+
+Each stage requires an explicit invocation; this launcher never advances stages.
+Use this file with the worktree's .venv/bin/python.
+"""
+from __future__ import annotations
+
+import argparse
+from copy import deepcopy
+from dataclasses import is_dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+REPO = Path(__file__).resolve().parents[2]
+TASKS = {
+    "smoke": "Instinct-ACP-Track-G1-v1",
+    "preflight": "Instinct-ACP-Track-G1-v1",
+    "stage1": "Instinct-ACP-Track-G1-v1",
+    "stage2": "Instinct-ACP-Stage2-G1-v1",
+    "stage3": "Instinct-ACP-Stage3-Flat-G1-v1",
+}
+_RUN_DIR: Path | None = None
+_TARGET_ITERATIONS = 0
+_RESUME_CHECKPOINT: Path | None = None
+
+# Keep the chosen stage's handover schedules and counters. The saved policy,
+# normalizers, world model, critic and optimizer-related settings are inherited.
+STAGE_FIELDS = {
+    "contact_source", "train_planner", "restart_iteration", "wm_only_iters",
+    "eta_obs_start_iter", "eta_rew_start_iter", "eta_ann_iters",
+    "planner_updates_per_iter", "lazy_exact_heightmap", "experiment_name",
+    "run_name", "max_iterations", "save_interval", "log_interval", "load_run",
+    "load_checkpoint", "resume", "device", "profile_phases",
+}
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def git(*args: str) -> str:
+    return subprocess.check_output(["git", "-C", str(REPO), *args], text=True).strip()
+
+
+def inherit_agent_config(target, saved: dict) -> None:
+    """Restore compatible dataclass fields without replacing nested cfg objects."""
+    for key, value in saved.items():
+        if key in STAGE_FIELDS or not hasattr(target, key):
+            continue
+        current = getattr(target, key)
+        if is_dataclass(current) and isinstance(value, dict):
+            inherit_agent_config(current, value)
+        elif isinstance(current, dict) and isinstance(value, dict):
+            for name, item in value.items():
+                if name in current and is_dataclass(current[name]) and isinstance(item, dict):
+                    inherit_agent_config(current[name], item)
+                else:
+                    current[name] = deepcopy(item)
+        else:
+            setattr(target, key, deepcopy(value))
+
+
+def exit_status(returncode: int, error: str | None = None) -> dict:
+    """Publish only checkpoint/sidecar pairs that actually exist."""
+    candidates = []
+    if _RUN_DIR is not None:
+        for path in _RUN_DIR.glob("model_*.pt"):
+            match = re.fullmatch(r"model_(\d+)\.pt", path.name)
+            if match and path.with_name(f"acp_state_{match[1]}.pt").is_file():
+                candidates.append((int(match[1]), path.resolve()))
+    if not candidates and _RESUME_CHECKPOINT is not None:
+        match = re.fullmatch(r"model_(\d+)\.pt", _RESUME_CHECKPOINT.name)
+        if match:
+            candidates.append((int(match[1]), _RESUME_CHECKPOINT))
+    completed, checkpoint = max(candidates, default=(0, None))
+    if returncode == 0 and completed < _TARGET_ITERATIONS:
+        returncode, error = 130, "training returned before its target iteration"
+    status = dict(returncode=returncode, completed_iterations=completed,
+                  target_iterations=_TARGET_ITERATIONS,
+                  checkpoint=str(checkpoint) if checkpoint else None,
+                  error=error, finished_utc=datetime.now(timezone.utc).isoformat())
+    if _RUN_DIR is not None:
+        _RUN_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = _RUN_DIR / ".exit_status.json.tmp"
+        temporary.write_text(json.dumps(status, indent=2) + "\n")
+        temporary.replace(_RUN_DIR / "exit_status.json")
+    return status
+
+
+def main() -> int:
+    global _RUN_DIR, _TARGET_ITERATIONS, _RESUME_CHECKPOINT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=tuple(TASKS))
+    parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--num-envs", type=int)
+    parser.add_argument("--iterations", type=int)
+    parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--gpu", type=int, default=0)
+    args = parser.parse_args()
+    dataset, run_dir = args.dataset.expanduser().resolve(), args.run_dir.expanduser().resolve()
+    task = TASKS[args.mode]
+    if not (dataset / "metadata.yaml").is_file():
+        parser.error(f"missing {dataset / 'metadata.yaml'}")
+    if run_dir.exists() and (not run_dir.is_dir() or any(run_dir.iterdir())):
+        parser.error(f"run directory must be empty: {run_dir}")
+    _RUN_DIR = run_dir
+    if args.mode in ("stage2", "stage3") and args.resume_checkpoint is None:
+        parser.error("Stage 2/3 require a previous-stage checkpoint and ACP sidecar")
+    if args.num_envs is not None and args.num_envs <= 0:
+        parser.error("--num-envs must be positive")
+    if args.iterations is not None and args.iterations <= 0:
+        parser.error("--iterations must be positive")
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    os.environ["ACP_DATASET"] = str(dataset)
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    os.environ.setdefault("WARP_CACHE_PATH", "/root/autodl-tmp/acp-g1/cache/warp")
+    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", "/root/autodl-tmp/acp-g1/cache/torchinductor")
+    os.environ.setdefault("MPLCONFIGDIR", "/root/autodl-tmp/acp-g1/cache/matplotlib")
+
+    import yaml
+    meta = yaml.safe_load((dataset / "metadata.yaml").read_text())
+    entries = meta.get("motion_files", [])
+    if not entries:
+        parser.error("dataset contains no motion files")
+    for entry in entries:
+        motion = dataset / entry["motion_file"]
+        sidecar = motion.with_suffix(".contacts.npz")
+        if not motion.is_file() or not sidecar.is_file():
+            parser.error(f"incomplete motion/contact pair: {motion}")
+    for terrain in meta.get("terrains", []):
+        if terrain.get("terrain_file") and not (dataset / terrain["terrain_file"]).is_file():
+            parser.error(f"missing terrain: {terrain['terrain_file']}")
+
+    # Match the repository's train_on_dataset process-local override.
+    import instinct_mj.tasks.acp.config.g1.acp_tracking_cfg as acp_g1
+    acp_g1.MOTION_FOLDER = str(dataset)
+    buffer = acp_g1.motion_reference_cfg.motion_buffers["TerrainMotion"]
+    buffer.path, buffer.metadata_yaml = str(dataset), str(dataset / "metadata.yaml")
+    from instinct_mj.scripts.instinct_rl.train import TrainConfig, run_train
+    cfg = TrainConfig.from_task(task)
+    inherited_agent = None
+    if args.resume_checkpoint:
+        checkpoint = args.resume_checkpoint.expanduser().resolve()
+        if (not re.fullmatch(r"model_\d+\.pt", checkpoint.name)
+                or not checkpoint.is_file()
+                or not checkpoint.with_name(checkpoint.name.replace("model_", "acp_state_", 1)).is_file()):
+            parser.error("resume requires a model checkpoint and its matching ACP sidecar")
+        inherited_agent = checkpoint.parent / "params" / "agent.yaml"
+        if not inherited_agent.is_file():
+            parser.error(f"missing saved agent configuration: {inherited_agent}")
+        import torch
+        saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        if args.mode == "stage3" and not saved.get("has_planner", False):
+            parser.error("Stage 3 requires a checkpoint containing a trained planner")
+        if args.mode == "stage2" and (saved.get("infos") or {}).get("stage") == 3:
+            parser.error("a Stage 3 checkpoint cannot initialize Stage 2")
+        if args.mode in ("stage1", "smoke", "preflight") and saved.get("has_planner", False):
+            parser.error("Stage 1 cannot resume a checkpoint from a later stage")
+        inherit_agent_config(cfg.agent, yaml.safe_load(inherited_agent.read_text()))
+        cfg.agent.load_run = str(checkpoint.parent)
+        cfg.agent.load_checkpoint = checkpoint.name
+        cfg.agent.resume = True
+        _RESUME_CHECKPOINT = checkpoint
+    cfg.agent.heightmap_cache_dir = "/root/autodl-tmp/acp-g1/cache/heightmaps"
+    cfg.agent.device = "cuda:0"
+    diagnostic = args.mode in ("smoke", "preflight")
+    cfg.agent.log_interval = 1 if diagnostic else 10
+    cfg.agent.save_interval = 1 if diagnostic else 1000
+    cfg.env.scene.num_envs = args.num_envs or (32 if args.mode == "smoke" else cfg.env.scene.num_envs)
+    cfg.agent.max_iterations = args.iterations or (6 if args.mode == "preflight" else 2 if args.mode == "smoke" else cfg.agent.max_iterations)
+    _TARGET_ITERATIONS = cfg.agent.max_iterations
+    cfg.agent.profile_phases = diagnostic
+    if args.mode == "smoke":
+        for key, value in dict(buffer_steps=64, warmup_steps=16, wm_batch=32,
+                               wm_batches=1, pi_batch=32, horizon=8,
+                               wm_only_iters=0, compile=False, compile_policy=False,
+                               cuda_graph_wm=False, cuda_graph_policy=False).items():
+            setattr(cfg.agent, key, value)
+    elif args.mode == "preflight":
+        cfg.agent.wm_only_iters = 0  # Exercise the full actor update before long training.
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    files = [p for p in dataset.rglob("*") if p.is_file() and p.suffix.lower() in (".npz", ".yaml", ".stl", ".obj", ".json")]
+    dataset_files = [{"path": str(p.relative_to(dataset)), "size": p.stat().st_size,
+                      "sha256": sha256(p)} for p in sorted(files)]
+    manifest = dict(created_utc=datetime.now(timezone.utc).isoformat(), argv=sys.argv,
+                    task=task, mode=args.mode, python=sys.executable,
+                    source_head=git("rev-parse", "HEAD"), source_status=git("status", "--short"),
+                    source_diff_sha256=hashlib.sha256(git("diff", "HEAD", "--", "src").encode()).hexdigest(),
+                    lock_sha256=sha256(REPO / "uv.lock"), launcher_sha256=sha256(Path(__file__)),
+                    dataset=str(dataset), motion_count=len(entries), dataset_files=dataset_files,
+                    gpu_physical_index=args.gpu, num_envs=cfg.env.scene.num_envs,
+                    total_iterations=cfg.agent.max_iterations,
+                    inherited_agent_config=str(inherited_agent) if inherited_agent else None,
+                    inherited_agent_sha256=sha256(inherited_agent) if inherited_agent else None,
+                    resume_checkpoint=str(args.resume_checkpoint) if args.resume_checkpoint else None)
+    (run_dir / "launch_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(json.dumps({k: v for k, v in manifest.items() if k != "dataset_files"}, indent=2), flush=True)
+    os.chdir(REPO)
+    started = time.monotonic()
+    run_train(task, cfg, run_dir)
+    import torch
+    result = dict(elapsed_seconds=time.monotonic() - started,
+                  max_memory_allocated_gib=torch.cuda.max_memory_allocated() / 2**30,
+                  max_memory_reserved_gib=torch.cuda.max_memory_reserved() / 2**30,
+                  gpu_total_memory_gib=torch.cuda.get_device_properties(0).total_memory / 2**30,
+                  checkpoints=sorted(p.name for p in run_dir.glob("model_*.pt")),
+                  sidecars=sorted(p.name for p in run_dir.glob("acp_state_*.pt")))
+    (run_dir / "run_result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result, indent=2), flush=True)
+    return exit_status(0)["returncode"]
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            code = 130
+        elif isinstance(exc, SystemExit):
+            code = exc.code if isinstance(exc.code, int) else 1
+        else:
+            code = 1
+        if code and (_RUN_DIR is None or not (_RUN_DIR / "exit_status.json").is_file()):
+            exit_status(code, f"{type(exc).__name__}: {exc}")
+        raise

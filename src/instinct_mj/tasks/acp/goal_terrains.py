@@ -321,6 +321,32 @@ def build_box_descent(d: float, rng: np.random.Generator) -> GoalTile:
     return reverse(build_box_ascent(d, rng))
 
 
+def build_flat(d: float, rng: np.random.Generator) -> GoalTile:
+    """Deployment curriculum: bounded flat ground, 1--4 m goals and changing travel directions.
+
+    This optional terrain is deliberately absent from ``TERRAIN_TYPES``. The ten
+    levels grow the patch-center distance from 1.5 to 3.5 m and rotate the travel
+    direction through a circle. Independent 0.1 m patch jitter keeps every
+    spawn-goal distance strictly inside [1, 4] m, including the extreme corners.
+    """
+    distance = lerp(1.5, 3.5, d)
+    bearing = 2 * math.pi * d * (NUM_LEVELS - 1) / NUM_LEVELS
+    offset = distance / 2 * np.array([math.cos(bearing), math.sin(bearing)])
+    return GoalTile(
+        boxes=[slab(-HX, HX)],
+        spawn=[Patch((-float(offset[0]), -float(offset[1]), 0.0), (0.1, 0.1), yaw=bearing)],
+        goal=[Patch((float(offset[0]), float(offset[1]), 0.0), (0.1, 0.1), yaw=bearing)],
+        face=0.0,
+        heading_any=True,
+        foot=True,
+        stumble=True,
+        slip=True,
+        getup=False,
+        lying=False,
+        params={"distance": distance, "bearing": bearing},
+    )
+
+
 BUILDERS = {
     "platform": build_platform,
     "stairs_up": lambda d, rng: build_stairs(d, rng, walled=False, down=False),
@@ -339,8 +365,9 @@ BUILDERS = {
     "ladder": build_ladder,
     "vault": build_vault,
     "getup": build_getup,
+    "flat": build_flat,
 }
-assert tuple(BUILDERS) == TERRAIN_TYPES
+assert tuple(BUILDERS) == (*TERRAIN_TYPES, "flat")
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------

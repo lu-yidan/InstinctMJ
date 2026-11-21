@@ -19,6 +19,7 @@ the position error of a contact link at the moment its measured contact starts (
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -36,7 +37,13 @@ if os.environ.get("ACP_DATASET"):  # otherwise the motion folder of the task con
 import instinct_mj.tasks  # noqa: E402,F401  (registers the tasks)
 from instinct_mj.rl import InstinctRlVecEnvWrapper  # noqa: E402
 from instinct_mj.rl.acp.runner import clip_family  # noqa: E402
+from instinct_mj.rl.acp.sim import ACPSimReader  # noqa: E402
 from instinct_mj.tasks.registry import load_env_cfg, load_env_cls, load_instinct_rl_cfg, load_runner_cls  # noqa: E402
+
+
+def _disabled_paper_termination(env, **kwargs):
+    """Retain term configuration for analytic metric construction, without firing."""
+    return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
 
 def main() -> None:
@@ -55,10 +62,13 @@ def main() -> None:
     parser.add_argument("--noise", type=float, default=None, help="std of the Gaussian action noise (default: 0.1 in robust mode, 0 in paper mode)")
     parser.add_argument("--clip-regex", default=".*", help="only the clips whose name matches")
     parser.add_argument("--out", default=None)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     paper = args.mode == "paper"
     device = "cuda:0"
+    torch.manual_seed(args.seed)
     cfg = load_env_cfg(args.task)
+    cfg.seed = args.seed
     cfg.scene.num_envs = args.num_envs
     cfg.episode_length_s = 120.0  # the episodes last until the clip end
     if paper:
@@ -66,17 +76,26 @@ def main() -> None:
         for actuator in cfg.scene.entities["robot"].articulation.actuators:
             actuator.delay_max_lag = 0
         cfg.events["reset_robot"].params["randomize_velocity_range"] = {}
+        for name in ("base_xy_too_far", "foot_pos_too_far", "contact_violation"):
+            cfg.terminations[name].func = _disabled_paper_termination
     env = load_env_cls(args.task)(cfg=cfg, device=device)
     vec = InstinctRlVecEnvWrapper(env, policy_group="policy", critic_group="critic")
     agent = load_instinct_rl_cfg(args.task).to_dict()
     _saved = os.path.join(os.path.dirname(os.path.abspath(args.checkpoint)), "params", "agent.yaml")
     if os.path.isfile(_saved):  # the runner options of the run the checkpoint comes from (world-model inputs, critic size, termination source)
         import yaml
-        agent.update({k: v for k, v in yaml.safe_load(open(_saved)).items() if not isinstance(v, dict) and k in agent})
+        agent.update({k: v for k, v in yaml.safe_load(open(_saved)).items() if k in agent})
     agent.update(compile=False, compile_policy=False, buffer_steps=64, warmup_steps=32)
     runner = load_runner_cls(args.task)(vec, agent, None, device)
     runner.load(args.checkpoint)
-    runner.setup_training()
+    # Evaluation needs loaded actor/planner/normalizer plus FK and live state;
+    # it does not use a learned world model, critic, training replay or optimizers.
+    # setup_training() resumes that state and checks its DR context encoding,
+    # which intentionally differs in paper mode and on held-out source files.
+    runner.motion, runner.kin, runner.scanner, runner.mdp = runner.build_analytic_mdp()
+    runner.reader = ACPSimReader(env)
+    motion_buffer = next(iter(env.scene["motion_reference"].motion_buffers.values()))
+    runner.motion_names = [os.path.splitext(os.path.basename(path))[0] for path in motion_buffer._all_motion_files]
     policy = runner.get_inference_policy(device=device)
     torch.set_grad_enabled(False)
     start = env.curriculum_manager.get_term_cfg("episode_start").func
@@ -213,7 +232,10 @@ def main() -> None:
     print(f"overall (mean over {len(valid)} clips, {int(count.sum())} episodes, {int(unfinished.sum())} unfinished): survive {overall['survive']:.3f} success {overall['success']:.3f} strict {overall['strict_success']:.3f} label agreement {overall['label_agreement']:.3f}")
     print(f"peak GPU memory allocated by torch: {torch.cuda.max_memory_allocated() / 2**30:.2f} GB")
     if args.out:
-        json.dump(dict(checkpoint=args.checkpoint, task=args.task, mode=args.mode, overall=overall, families=summary, clips=rows, max_xy_episodes={names[k]: v for k, v in enumerate(max_xy_episodes) if v}), open(args.out, "w"), indent=1)
+        metadata_path = motion_buffer.cfg.metadata_yaml
+        json.dump(dict(checkpoint=args.checkpoint, task=args.task, mode=args.mode, seed=args.seed,
+                       metadata_path=os.path.abspath(metadata_path), metadata_sha256=hashlib.sha256(open(metadata_path, "rb").read()).hexdigest(),
+                       overall=overall, families=summary, clips=rows, max_xy_episodes={names[k]: v for k, v in enumerate(max_xy_episodes) if v}), open(args.out, "w"), indent=1)
 
 
 if __name__ == "__main__":

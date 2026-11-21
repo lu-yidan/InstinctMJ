@@ -88,6 +88,24 @@ def _acp_stage3_play_env_cfg():
     return G1AcpStage3V1EnvCfg_PLAY()
 
 
+def _acp_stage3_flat_env_cfg():
+    from .acp_flat_cfg import G1AcpStage3FlatV1EnvCfg
+
+    return G1AcpStage3FlatV1EnvCfg()
+
+
+def _acp_stage3_flat_play_env_cfg():
+    from .acp_flat_cfg import G1AcpStage3FlatV1EnvCfg_PLAY
+
+    return G1AcpStage3FlatV1EnvCfg_PLAY()
+
+
+def g1_acp_stage3_flat_instinct_rl_cfg():
+    cfg = g1_acp_stage3_instinct_rl_cfg()
+    cfg.experiment_name = "g1AcpStage3FlatV1"
+    return cfg
+
+
 # Stage 1: the tracker follows the reference contact targets.
 register_instinct_task(
     task_id="Instinct-ACP-Track-G1-v1",
@@ -132,6 +150,25 @@ register_instinct_task(
     env_cfg_factory=_acp_stage3_play_env_cfg,
     play_env_cfg_factory=_acp_stage3_play_env_cfg,
     instinct_rl_cfg_factory=g1_acp_stage3_instinct_rl_cfg,
+    env_entry_point=ACP_ENV_ENTRY_POINT,
+    runner_entry_point=ACP_STAGE3_RUNNER_ENTRY_POINT,
+)
+
+# Custom flat-ground deployment curriculum; original Stage 3 terrain mix is unchanged.
+register_instinct_task(
+    task_id="Instinct-ACP-Stage3-Flat-G1-v1",
+    env_cfg_factory=_acp_stage3_flat_env_cfg,
+    play_env_cfg_factory=_acp_stage3_flat_play_env_cfg,
+    instinct_rl_cfg_factory=g1_acp_stage3_flat_instinct_rl_cfg,
+    env_entry_point=ACP_ENV_ENTRY_POINT,
+    runner_entry_point=ACP_STAGE3_RUNNER_ENTRY_POINT,
+)
+
+register_instinct_task(
+    task_id="Instinct-ACP-Stage3-Flat-G1-Play-v1",
+    env_cfg_factory=_acp_stage3_flat_play_env_cfg,
+    play_env_cfg_factory=_acp_stage3_flat_play_env_cfg,
+    instinct_rl_cfg_factory=g1_acp_stage3_flat_instinct_rl_cfg,
     env_entry_point=ACP_ENV_ENTRY_POINT,
     runner_entry_point=ACP_STAGE3_RUNNER_ENTRY_POINT,
 )
