@@ -476,6 +476,10 @@ def estimate_velocity(
         next_frame = torch.roll(positions, -1, dims=1)
         next_frame[:, -1] = positions[:, -1]
         velocity = (next_frame - prev_frame) / (2 * dt)
+        # At a clamped endpoint the samples span dt rather than 2 * dt.
+        if positions.shape[1] > 1:
+            velocity[:, 0] = (positions[:, 1] - positions[:, 0]) / dt
+            velocity[:, -1] = (positions[:, -1] - positions[:, -2]) / dt
     else:
         raise ValueError(f"Unknown estimation type: {estimation_type}.")
 
@@ -528,6 +532,13 @@ def estimate_angular_velocity(
             next_frame.reshape(-1, 4),
             2 * dt,
         ).reshape(-1, quaternions.shape[1], 3)
+        if quaternions.shape[1] > 1:
+            angular_velocity[:, 0] = quat_angular_velocity(
+                quaternions[:, 0], quaternions[:, 1], dt
+            )
+            angular_velocity[:, -1] = quat_angular_velocity(
+                quaternions[:, -2], quaternions[:, -1], dt
+            )
     else:
         raise ValueError(f"Unknown estimation type: {estimation_type}.")
 
