@@ -47,6 +47,9 @@ def main():
     cfg = load_env_cfg(args.task, play=True)
     cfg.scene.num_envs = min(args.episodes, args.num_envs)
     cfg.seed, cfg.auto_reset = args.seed, False
+    # Evaluation levels are a fixed cohort, not a continuation of training.
+    # Otherwise reset() applies last episode's promote/demote after level is set.
+    cfg.curriculum.pop('goal_terrain', None)
     _disable_headless_debug_visualization(cfg)
     if cfg.scene.arena.types != ('flat',):
         raise ValueError('This acceptance test requires the dedicated flat arena')
@@ -119,7 +122,9 @@ def main():
             'episode_count':len(results),
             'task':args.task,'dataset':str(dataset),'seed':args.seed,'gpu':args.gpu,
             'overall':{'success':success,'episodes':len(results),'finite':all(row['finite'] for row in results)},
-            'criteria':{'distance':.2,'heading_error':.25,'speed_xy':.15,'height_error':.1,'max_tilt_rad':.7,'hold_seconds':1.,'minimum_success':args.min_success},
+            'criteria':{'distance':.2,'heading_error':.25,'speed_xy':.15,'height_error':.1,'max_tilt_rad':.7,'hold_seconds':1.,'minimum_success':args.min_success,
+                        'success_semantics':'first continuous one-second hold at any time within the episode',
+                        'goal_terrain_curriculum':False},
             'wall_seconds':time.monotonic()-started,'episodes':results,
             'passed':success >= args.min_success and all(row['finite'] for row in results)}
         args.output.parent.mkdir(parents=True,exist_ok=True)
