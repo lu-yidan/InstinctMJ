@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
 import sys
 import tempfile
@@ -65,6 +66,21 @@ def _resolve_device(cfg: TrainConfig) -> str:
     if cfg.device is not None:
         return cfg.device
     return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+
+def _resolve_resume_checkpoint(log_dir: Path, load_run: str, checkpoint: str) -> Path:
+    run_path = Path(load_run).expanduser() if load_run else None
+    if run_path is not None and run_path.is_absolute():
+        # mjlab treats run_dir as a prefix regex. An explicit directory must
+        # not select a sibling such as stage1_smoke_v1 or interpret metacharacters.
+        return get_checkpoint_path(
+            log_path=run_path.parent,
+            run_dir=re.escape(run_path.name) + "$",
+            checkpoint=checkpoint,
+        )
+    return get_checkpoint_path(
+        log_path=log_dir.parent, run_dir=load_run, checkpoint=checkpoint
+    )
 
 
 def _parse_cuda_device_index(device: str) -> int:
@@ -235,20 +251,9 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     runner.add_git_repo_to_log(__file__)
 
     if cfg.agent.resume:
-        log_root_path = log_dir.parent
-        load_run = Path(cfg.agent.load_run).expanduser() if cfg.agent.load_run else None
-        if load_run is not None and load_run.is_absolute():
-            resume_path = get_checkpoint_path(
-                log_path=load_run.parent,
-                run_dir=load_run.name,
-                checkpoint=cfg.agent.load_checkpoint,
-            )
-        else:
-            resume_path = get_checkpoint_path(
-                log_path=log_root_path,
-                run_dir=cfg.agent.load_run,
-                checkpoint=cfg.agent.load_checkpoint,
-            )
+        resume_path = _resolve_resume_checkpoint(
+            log_dir, cfg.agent.load_run, cfg.agent.load_checkpoint
+        )
         print(f"[INFO] Resuming from checkpoint: {resume_path}")
         runner.load(str(resume_path))
 
