@@ -91,6 +91,14 @@ or optimizer; paper evaluation deliberately disables DR, whose context encoding
 differs from training. Saved actor configurations, explicit seeds and metadata
 hashes are retained in the evaluation path.
 
+When moving runs to another host, copy the checkpoint, matching
+`acp_state_N.pt`, and `params/agent.yaml` together, preserving their hashes.
+`run_stages.py` and `diagnose_abc.py` accept `--heightmap-cache-dir` or
+`ACP_HEIGHTMAP_CACHE_DIR` to replace the old host's cache path. The default is
+`~/.cache/instinct_mj/supermimic_heightmaps`; this path is infrastructure, not a
+learner setting. Keep hardware-specific repeats separate, and train both arms
+of a controlled comparison on the same host.
+
 ## Frozen Stage 1 / Stage 2 diagnosis
 
 `diagnose_abc.py` compares three frozen policies, each with its checkpoint's own

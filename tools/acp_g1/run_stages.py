@@ -139,6 +139,9 @@ def main() -> int:
     parser.add_argument("--actor-lr-scale", type=float,
                         help="Override only pi_lr_scale after saved configuration is restored (not the WM/critic/planner LR)")
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--heightmap-cache-dir", type=Path,
+                        default=Path(os.environ.get("ACP_HEIGHTMAP_CACHE_DIR", "~/.cache/instinct_mj/supermimic_heightmaps")),
+                        help="Host-local cache; overrides cache paths inherited from another training host")
     args = parser.parse_args()
     dataset, run_dir = args.dataset.expanduser().resolve(), args.run_dir.expanduser().resolve()
     task = TASKS[args.mode]
@@ -220,7 +223,7 @@ def main() -> int:
         cfg.agent.train_planner = True
         cfg.agent.cuda_graph_policy = False
         cfg.agent.compile_policy = False
-    cfg.agent.heightmap_cache_dir = "/root/autodl-tmp/acp-g1/cache/heightmaps"
+    cfg.agent.heightmap_cache_dir = str(args.heightmap_cache_dir.expanduser().resolve())
     cfg.agent.device = "cuda:0"
     diagnostic = args.mode in ("smoke", "preflight")
     cfg.agent.log_interval = 1 if diagnostic else 10
@@ -256,6 +259,7 @@ def main() -> int:
                     planner_refit=args.planner_refit,
                     seed_initial_support=args.seed_initial_support,
                     actor_lr_scale=cfg.agent.pi_lr_scale,
+                    heightmap_cache_dir=cfg.agent.heightmap_cache_dir,
                     effective_actor_lr=cfg.agent.lr * cfg.agent.pi_lr_scale,
                     collection_contact_source=cfg.agent.contact_source)
     (run_dir / "launch_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

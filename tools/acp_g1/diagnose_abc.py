@@ -146,6 +146,9 @@ def main():
     parser.add_argument("--max-steps", type=int, default=1500)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--gpu", type=int, default=1)
+    parser.add_argument("--heightmap-cache-dir", type=Path,
+                        default=Path(os.environ.get("ACP_HEIGHTMAP_CACHE_DIR", "~/.cache/instinct_mj/supermimic_heightmaps")),
+                        help="Host-local cache; ignores checkpoint-host cache paths")
     parser.add_argument("--clip-regex", default=".*")
     parser.add_argument("--trace-clips", default="php_cfg0080_01,php_cfg0098_00,php_cfg0002_00")
     parser.add_argument("--trace-all-clips", action="store_true")
@@ -237,6 +240,7 @@ def run(args, outdir):
             raise ValueError("Checkpoint saved agent config missing: " + str(saved_path))
         saved = yaml.safe_load(saved_path.read_text())
         agent.update({key: value for key, value in saved.items() if key in agent})
+        agent["heightmap_cache_dir"] = str(args.heightmap_cache_dir.expanduser().resolve())
         agent.update(compile=False, compile_policy=False, buffer_steps=64, warmup_steps=32)
         runner = load_runner_cls(task)(vec, agent, None, device)
         runner.load(checkpoint)
