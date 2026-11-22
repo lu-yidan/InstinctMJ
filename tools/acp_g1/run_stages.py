@@ -12,6 +12,7 @@ from dataclasses import is_dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -87,6 +88,14 @@ def inherit_agent_config(target, saved: dict) -> None:
             setattr(target, key, deepcopy(value))
 
 
+def override_actor_lr_scale(agent, value: float | None) -> None:
+    """Change only the actor multiplier after restoring the saved config."""
+    if value is not None:
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("actor-lr-scale must be finite and positive")
+        agent.pi_lr_scale = value
+
+
 def exit_status(returncode: int, error: str | None = None) -> dict:
     """Publish only checkpoint/sidecar pairs that actually exist."""
     candidates = []
@@ -127,6 +136,8 @@ def main() -> int:
                         help="Stage 2 only: frozen actor/normalizer, reference-contact collection, planner learning")
     parser.add_argument("--seed-initial-support", action="store_true",
                         help="Reference episodes: exclude initial support settling from new-contact labels")
+    parser.add_argument("--actor-lr-scale", type=float,
+                        help="Override only pi_lr_scale after saved configuration is restored (not the WM/critic/planner LR)")
     parser.add_argument("--gpu", type=int, default=0)
     args = parser.parse_args()
     dataset, run_dir = args.dataset.expanduser().resolve(), args.run_dir.expanduser().resolve()
@@ -146,6 +157,8 @@ def main() -> int:
         parser.error("--num-envs must be positive")
     if args.iterations is not None and args.iterations <= 0:
         parser.error("--iterations must be positive")
+    if args.actor_lr_scale is not None and (not math.isfinite(args.actor_lr_scale) or args.actor_lr_scale <= 0):
+        parser.error("--actor-lr-scale must be finite and positive")
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     os.environ["ACP_DATASET"] = str(dataset)
     os.environ.setdefault("MUJOCO_GL", "egl")
@@ -200,6 +213,7 @@ def main() -> int:
         cfg.agent.resume = True
         _RESUME_CHECKPOINT = checkpoint
     cfg.agent.freeze_tracker = args.planner_refit
+    override_actor_lr_scale(cfg.agent, args.actor_lr_scale)
     cfg.agent.planner_seed_initial_support = args.seed_initial_support
     if args.planner_refit:
         cfg.agent.contact_source = "reference"
@@ -241,6 +255,8 @@ def main() -> int:
                     resume_checkpoint=str(args.resume_checkpoint) if args.resume_checkpoint else None,
                     planner_refit=args.planner_refit,
                     seed_initial_support=args.seed_initial_support,
+                    actor_lr_scale=cfg.agent.pi_lr_scale,
+                    effective_actor_lr=cfg.agent.lr * cfg.agent.pi_lr_scale,
                     collection_contact_source=cfg.agent.contact_source)
     (run_dir / "launch_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({k: v for k, v in manifest.items() if k != "dataset_files"}, indent=2), flush=True)

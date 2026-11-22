@@ -193,3 +193,12 @@ contact label then selects the following landing. A foot initially swinging or
 landing after the initial reference liftoff keeps its first genuine contact.
 Goal-episode labels retain their original behavior. This option is explicit for
 each run and is recorded in the launch manifest.
+
+`--actor-lr-scale 0.25` overrides only the actor's `pi_lr_scale`, after the saved
+configuration is restored. With `lr=0.0002`, this gives actor LR `0.00005` while
+the world model, critic, planner, handover schedules and labeling retain their
+existing settings. The Muon/Adam optimizer restores its moments but keeps the
+constructor's LR, including its device tensor for captured updates. Both the
+multiplier and effective actor LR are recorded in the launch manifest. Use an
+independent resumed control run at scale 1 when testing this change, because
+unsaved replay buffers refill on resume.
