@@ -136,6 +136,20 @@ robot's own pose. No common local-goal vector or external goal schedule is force
 `--trace-training-contacts` additionally records the exact force-head hindsight
 inputs: solver force history, contact points with the training fallback and the
 estimated pelvis pose. This opt-in trace currently requires `force_head` mode.
+It also saves simulated/reference contact-link poses, allowing solver contact
+point offsets to be distinguished from link tracking error. `--trace-all-clips
+--trace-variants B` saves every reference-bypass cohort without saving A/C traces;
+all three policies are still evaluated. `--trace-planner-inputs` additionally
+saves raw proprioception and points for offline, same-state planner comparisons.
+
+`audit_contact_labels.py --run-dir /absolute/path/traced-abc --output-dir
+/absolute/path/new-empty-label-audit` applies the actual hindsight labeler to
+the saved episodes. It compares original and initial-support-corrected labels
+with reference commands, preserving validity masks, boundary-censored contact
+segments and a separate interior with a full future horizon. It refuses partial
+episodes. The default is B only. This is an audit of recorded paper rollouts,
+not a measurement of the DR training replay distribution; reference contacts
+need not equal contacts of the independently simulated robot.
 
 `A.paper.json`, `B.paper.json`, `C.paper.json` and `source_macros.json` separate
 source-macro success from the mean over windows. `pairing.json` records strict

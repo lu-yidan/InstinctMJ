@@ -148,6 +148,11 @@ def main():
     parser.add_argument("--gpu", type=int, default=1)
     parser.add_argument("--clip-regex", default=".*")
     parser.add_argument("--trace-clips", default="php_cfg0080_01,php_cfg0098_00,php_cfg0002_00")
+    parser.add_argument("--trace-all-clips", action="store_true")
+    parser.add_argument("--trace-variants", default="ABC", choices=("A", "B", "C", "AB", "AC", "BC", "ABC"),
+                        help="Limit saved traces, without changing the A/B/C evaluation")
+    parser.add_argument("--trace-planner-inputs", action="store_true",
+                        help="Save raw planner proprioception, goal and scan for same-state offline checks")
     parser.add_argument("--trace-training-contacts", action="store_true",
                         help="Record the actual force/point inputs used by force_head hindsight labeling")
     args = parser.parse_args()
@@ -266,7 +271,7 @@ def run(args, outdir):
     selected = [k for k, name in enumerate(names) if re.search(args.clip_regex, name)]
     if not selected:
         raise ValueError("No selected clips")
-    trace_names = set(args.trace_clips.split(","))
+    trace_names = set(names) if args.trace_all_clips else set(args.trace_clips.split(","))
     if trace_names - set(names):
         raise ValueError("Trace clip missing: " + repr(trace_names - set(names)))
     families = [clip_family(item.get("group", "")) for item in bundles[0]["mb"].yaml_data["motion_files"]]
@@ -399,6 +404,8 @@ def run(args, outdir):
             store.setdefault(key, []).append(np.asarray(value))
 
     def trace_frame(bundle, clip_ids, active, tick, actions):
+        if bundle["label"] not in args.trace_variants:
+            return None
         runner, env = bundle["runner"], bundle["env"]
         trace_ids = torch.tensor([i for i in range(N) if bool(active[i]) and names[int(clip_ids[i])] in trace_names], device=device, dtype=torch.long)
         if not len(trace_ids):
@@ -438,6 +445,9 @@ def run(args, outdir):
                              "actions": cpu(actions[trace_ids]), "same_state_counterfactual_actions": cpu(counter_actions[trace_ids]),
                              "measured_contact": cpu(runner.reader.contact()[trace_ids]), "reference_contact_flags": cpu(runner.motion.flag(f, phase)[trace_ids]),
                              "active": np.ones(count, bool)})
+        if args.trace_planner_inputs:
+            append_arrays(trace, {"planner_proprio": cpu(obs[trace_ids, :PLANNER_PROPRIO]),
+                                  "planner_points": cpu(points[trace_ids])})
         if args.trace_training_contacts:
             link_pos, link_rot = runner.kin.forward(*S)[:2]
             force_z, contact_pos = runner.contact_measurement(link_pos[:, :9], env.episode_length_buf == 0, link_rot[:, :9])
@@ -447,6 +457,10 @@ def run(args, outdir):
                                   1 - 2 * (quat[:, 2].square() + quat[:, 3].square()))
             append_arrays(trace, {"training_contact_force_z": cpu(force_z[trace_ids]),
                                   "training_contact_pos_w": cpu(contact_pos[trace_ids]),
+                                  "training_contact_link_pos_w": cpu(link_pos[trace_ids, :9]),
+                                  "training_contact_link_rot_w": cpu(link_rot[trace_ids, :9]),
+                                  "reference_contact_link_pos_w": cpu((runner.motion.link_p[f] + origin[:, None])[trace_ids, :9]),
+                                  "reference_contact_link_rot_w": cpu(runner.motion.link_R[f][trace_ids, :9]),
                                   "training_estimated_pelvis_pos_w": cpu(scanner.estimated_pos_w[trace_ids]),
                                   "training_estimated_pelvis_yaw": cpu(est_yaw[trace_ids])})
         return trace_ids
@@ -612,6 +626,8 @@ def run(args, outdir):
                   "gait_cycle": "Measured left/right foot rising edges, separately for B and C; complete flag false when sequence boundaries censor an edge."},
               "goal_semantics": "Original native goal updater and U(.5,1.5) sampling retained. Only batch initial RNG/actual states are paired; later world goals may diverge through native reset/RNG history. Local goals always use each variant's own pelvis pose.",
               "scope": "Training metadata only; holdout is never loaded; no learning or sidecar mutations."}
+    schema["traced_variants"] = list(args.trace_variants)
+    schema["planner_inputs_recorded"] = args.trace_planner_inputs
     if args.trace_training_contacts:
         schema["training_contact_trace"] = "Exact force_head contact_measurement() inputs, strongest solver contact point with last-point fallback, pre-action; use label_episode() defaults for hindsight labels. Estimated pelvis pose is the scanner pose used by training."
     initial_values = {key: np.concatenate(value, axis=0) for key, value in initial_arrays.items()}
