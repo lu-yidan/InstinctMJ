@@ -269,7 +269,9 @@ class Pipeline:
             command = [self.python, str(self.launcher), f"stage{stage}", "--dataset", str(self.dataset), "--run-dir", str(run_dir),
                        "--num-envs", str(setting.get("num_envs", 4096 if stage == 1 else 2048)), "--iterations", str(iterations),
                        "--gpu", str(self.config.get("train_gpu", 0))]
-            if stage > 1:
+            if stage == 1 and setting.get("resume_checkpoint"):
+                command += ["--resume-checkpoint", str(Path(setting["resume_checkpoint"]).resolve())]
+            elif stage > 1:
                 command += ["--resume-checkpoint", checkpoints[stage - 1]["path"]]
             if not self.process(key, command, external=setting.get("attach")):
                 return False

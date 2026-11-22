@@ -64,6 +64,15 @@ process receipts, checkpoint hashes and evaluation reports remain in
 `state_dir`. Configuration changes require a new state directory to prevent old
 receipts from being applied silently to different work.
 
+To continue Stage 1 after a failed evaluation, keep the old state and run
+directories intact. Copy the configuration, choose a new `state_dir` and a new
+empty stage `1` `run_dir`, and set stage `1` `resume_checkpoint` to the previous
+`model_N.pt`. Increase its `iterations` to the total target, for example 45,000
+when resuming iteration 30,000. The launcher restores the matching ACP training
+sidecar and saved agent configuration; the new controller reruns all four gates
+with the same thresholds. Use new post-export report paths as well. Changing
+the total target does not make a failed old evaluation pass.
+
 For an already-running Stage 1 launched outside the controller, put an `attach`
 object in stage `1`, with its actual `pid`, `log`, and the absolute
 `<run_dir>/exit_status.json` path as `exit_file`. A completed external run needs
