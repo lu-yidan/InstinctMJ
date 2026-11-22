@@ -1353,6 +1353,11 @@ class ACPRunner:
                     agg["pi"].append(pl), agg["v"].append(vl), agg["ir"].append(ir), agg["gn"].append(gn), agg["surv"].append(surv)
                     for k, v in terms.items():
                         terms_acc.setdefault(k, []).append(v)
+            if c.get("release_cuda_cache_each_iteration", False):
+                # Warp allocations cannot trigger PyTorch's allocator eviction.
+                # Keep this outside captured updates; live tensors/graph pools
+                # are retained, while unused global blocks return to the driver.
+                torch.cuda.empty_cache()
             if c.get("profile_phases", False):
                 torch.cuda.synchronize()
                 t_policy = time.perf_counter()

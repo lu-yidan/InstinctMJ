@@ -182,6 +182,8 @@ class ACPRunnerCfg:
     """Use ``torch.compile`` on the world-model functions (default True)."""
     compile_policy: bool = True
     """``torch.compile`` the imagination step, the reward / termination and the critic-feature functions (default True)."""
+    release_cuda_cache_each_iteration: bool = False
+    """Return unused Torch allocator blocks before the next external MuJoCo/Warp step. Active tensors and CUDA graph pools remain owned."""
     planner_imagination_subset: bool = True
     """Only infer observation-selected planner rows when eta_rew is zero; pad small batches to preserve numerical agreement."""
     checkpoint_imagination: bool = False

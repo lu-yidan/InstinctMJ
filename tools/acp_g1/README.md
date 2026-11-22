@@ -107,6 +107,13 @@ same batch to both experimental arms and evaluate the resulting models anew.
 Omitting the flag preserves the checkpoint's batch. The launch manifest records
 the policy, world-model and planner batches explicitly.
 
+When Torch's unused reserved blocks leave insufficient device memory for external
+MuJoCo/Warp graph launches, `--release-cuda-cache` returns unused allocator blocks
+between iterations, outside all captured updates. It retains live tensors and
+graph pools and adds allocator overhead. Use the same setting in both arms and
+stress-test past replay filling and actual planner updates; a ten-update policy
+preflight alone does not cover that peak.
+
 ## Frozen Stage 1 / Stage 2 diagnosis
 
 `diagnose_abc.py` compares three frozen policies, each with its checkpoint's own

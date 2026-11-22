@@ -148,6 +148,8 @@ def main() -> int:
                         help="Override only pi_lr_scale after saved configuration is restored (not the WM/critic/planner LR)")
     parser.add_argument("--pi-batch", type=int,
                         help="Policy imagination batch after resume; retain the saved value unless explicitly set")
+    parser.add_argument("--release-cuda-cache", action=argparse.BooleanOptionalAction, default=None,
+                        help="Return unused Torch cache to MuJoCo/Warp between iterations; inherit saved setting when omitted")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--heightmap-cache-dir", type=Path,
                         default=Path(os.environ.get("ACP_HEIGHTMAP_CACHE_DIR", "~/.cache/instinct_mj/supermimic_heightmaps")),
@@ -253,6 +255,8 @@ def main() -> int:
     elif args.mode == "preflight":
         cfg.agent.wm_only_iters = 0  # Exercise the full actor update before long training.
     override_policy_batch(cfg.agent, args.pi_batch)
+    if args.release_cuda_cache is not None:
+        cfg.agent.release_cuda_cache_each_iteration = args.release_cuda_cache
 
     run_dir.mkdir(parents=True, exist_ok=True)
     files = [p for p in dataset.rglob("*") if p.is_file() and p.suffix.lower() in (".npz", ".yaml", ".stl", ".obj", ".json")]
@@ -275,6 +279,7 @@ def main() -> int:
                     policy_batch_size=cfg.agent.pi_batch,
                     world_model_batch_size=cfg.agent.wm_batch,
                     planner_batch_size=cfg.agent.planner_batch,
+                    release_cuda_cache_each_iteration=cfg.agent.release_cuda_cache_each_iteration,
                     heightmap_cache_dir=cfg.agent.heightmap_cache_dir,
                     effective_actor_lr=cfg.agent.lr * cfg.agent.pi_lr_scale,
                     collection_contact_source=cfg.agent.contact_source)
