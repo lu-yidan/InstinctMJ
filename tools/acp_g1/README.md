@@ -90,3 +90,67 @@ state reader and analytic metrics. It does not resume the training world model
 or optimizer; paper evaluation deliberately disables DR, whose context encoding
 differs from training. Saved actor configurations, explicit seeds and metadata
 hashes are retained in the evaluation path.
+
+## Frozen Stage 1 / Stage 2 diagnosis
+
+`diagnose_abc.py` compares three frozen policies, each with its checkpoint's own
+saved normalizer: A is Stage 1 with reference contacts; B is Stage 2 with an
+explicit `actor(normalizer(reference_observation))` call that bypasses planner
+replacement; C is Stage 2's native inference policy with full planner takeover.
+There is no learning, optimizer resume, normalizer update, or hardware control.
+
+```bash
+python tools/acp_g1/diagnose_abc.py \
+  --dataset /absolute/path/php-flat \
+  --stage1-checkpoint /absolute/path/stage1/model_45000.pt \
+  --stage2-checkpoint /absolute/path/stage2/model_10000.pt \
+  --output-dir /absolute/path/new-empty-abc \
+  --num-envs 128 --episodes 8 --seed 42 --gpu 1
+python -m unittest discover -s tools/acp_g1 -p test_diagnose_abc.py -v
+python tools/acp_g1/plot_diagnosis.py --run-dir /absolute/path/new-empty-abc --episode 0
+```
+
+The default scope is every window in the training metadata. For the small
+three-window diagnostic, add
+`--clip-regex '^(php_cfg0080_01|php_cfg0098_00|php_cfg0002_00)$' --num-envs 24`.
+That subset is not a full-dataset or held-out performance measurement. The
+three named windows are traced by default; `--trace-clips` changes that list.
+Output directories must be new or empty.
+
+The plotting command uses Matplotlib and the saved trace only. It plots a fixed
+episode's trajectories, contact target errors, measured contact cycle and first
+world-goal divergence; `figures/manifest.json` records the input trace hash.
+
+Protocol 2 preserves paper evaluation settings and native goal updates. Each
+batch uses the same reset RNG and verifies identical actual initial physics,
+motion frame/origin, world goal, raw observations, control history and solver
+warmstart. Small independent-loader velocity rounding differences are recorded;
+B/C receive A's actual initial state and rebuild their histories without
+advancing reference time or consuming environment RNG. A itself is unchanged.
+CPU/CUDA RNG states must be bitwise equal after reset. Policy-only draws,
+including C's unused eta=1 Bernoulli draws, are isolated from environment RNG.
+Afterward the closed loops run independently: native failures/resets can change
+later world-goal sampling, which is recorded, and local goals always use each
+robot's own pose. No common local-goal vector or external goal schedule is forced.
+
+`A.paper.json`, `B.paper.json`, `C.paper.json` and `source_macros.json` separate
+source-macro success from the mean over windows. `pairing.json` records strict
+initial-state/RNG checks and the first later world-goal divergences.
+`initial_states.npz` stores the actual initial tensors. `trace_selected.npz` and
+its schema contain world pelvis/reference trajectories, same-state reference
+and planner contacts/validity, signed foot target errors, own/local and shared
+world goal information, actions, and same-state counterfactual actions.
+`first_divergence.json` distinguishes numerical action differences from a pelvis
+XY difference above 5 cm for five consecutive ticks and brackets the latter by
+measured left/right foot contact rising edges. These are diagnostic thresholds,
+not new policy gates. Invalid contact-position differences remain NaN with
+explicit validity masks.
+
+These reports explain failures; they do not replace a formal pipeline gate or
+turn an old failed evaluation into a pass. First reproduce A using the native
+`eval_tracker` CLI when comparing against a passed baseline. When evaluating
+intermediate Stage 2 weights, C always forces full planner takeover even before
+the training eta schedule reaches one; record training eta separately. A/B
+differences concern the actor and its own normalizer together, not the actor
+alone. Interpret closed-loop attribution alongside recorded goal divergence and
+same-state counterfactual traces.
