@@ -96,6 +96,14 @@ def override_actor_lr_scale(agent, value: float | None) -> None:
         agent.pi_lr_scale = value
 
 
+def override_policy_batch(agent, value: int | None) -> None:
+    """Limit imagined starts after resume without changing WM/planner batches."""
+    if value is not None:
+        if value <= 0:
+            raise ValueError("pi-batch must be positive")
+        agent.pi_batch = value
+
+
 def exit_status(returncode: int, error: str | None = None) -> dict:
     """Publish only checkpoint/sidecar pairs that actually exist."""
     candidates = []
@@ -138,6 +146,8 @@ def main() -> int:
                         help="Reference episodes: exclude initial support settling from new-contact labels")
     parser.add_argument("--actor-lr-scale", type=float,
                         help="Override only pi_lr_scale after saved configuration is restored (not the WM/critic/planner LR)")
+    parser.add_argument("--pi-batch", type=int,
+                        help="Policy imagination batch after resume; retain the saved value unless explicitly set")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--heightmap-cache-dir", type=Path,
                         default=Path(os.environ.get("ACP_HEIGHTMAP_CACHE_DIR", "~/.cache/instinct_mj/supermimic_heightmaps")),
@@ -162,6 +172,8 @@ def main() -> int:
         parser.error("--iterations must be positive")
     if args.actor_lr_scale is not None and (not math.isfinite(args.actor_lr_scale) or args.actor_lr_scale <= 0):
         parser.error("--actor-lr-scale must be finite and positive")
+    if args.pi_batch is not None and args.pi_batch <= 0:
+        parser.error("--pi-batch must be positive")
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     os.environ["ACP_DATASET"] = str(dataset)
     os.environ.setdefault("MUJOCO_GL", "egl")
@@ -240,6 +252,7 @@ def main() -> int:
             setattr(cfg.agent, key, value)
     elif args.mode == "preflight":
         cfg.agent.wm_only_iters = 0  # Exercise the full actor update before long training.
+    override_policy_batch(cfg.agent, args.pi_batch)
 
     run_dir.mkdir(parents=True, exist_ok=True)
     files = [p for p in dataset.rglob("*") if p.is_file() and p.suffix.lower() in (".npz", ".yaml", ".stl", ".obj", ".json")]
@@ -259,6 +272,9 @@ def main() -> int:
                     planner_refit=args.planner_refit,
                     seed_initial_support=args.seed_initial_support,
                     actor_lr_scale=cfg.agent.pi_lr_scale,
+                    policy_batch_size=cfg.agent.pi_batch,
+                    world_model_batch_size=cfg.agent.wm_batch,
+                    planner_batch_size=cfg.agent.planner_batch,
                     heightmap_cache_dir=cfg.agent.heightmap_cache_dir,
                     effective_actor_lr=cfg.agent.lr * cfg.agent.pi_lr_scale,
                     collection_contact_source=cfg.agent.contact_source)

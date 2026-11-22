@@ -6,10 +6,31 @@ import unittest
 
 import torch
 
-from run_stages import inherit_agent_config, override_actor_lr_scale
+from run_stages import inherit_agent_config, override_actor_lr_scale, override_policy_batch
 
 
 class ActorLrOverrideTests(unittest.TestCase):
+    def test_memory_batch_override_follows_resume_and_is_shared_by_lr_arms(self):
+        configurations = []
+        for scale in (1., .25):
+            agent = SimpleNamespace(pi_batch=64, wm_batch=32, planner_batch=32,
+                                    lr=.001, pi_lr_scale=1.)
+            inherit_agent_config(agent, dict(pi_batch=2048, wm_batch=2048,
+                                            planner_batch=4096, lr=.0002, pi_lr_scale=1.))
+            override_policy_batch(agent, None)
+            self.assertEqual(agent.pi_batch, 2048)
+            override_policy_batch(agent, 1024)
+            override_actor_lr_scale(agent, scale)
+            configurations.append(vars(agent))
+        difference = {k for k in configurations[0] if configurations[0][k] != configurations[1][k]}
+        self.assertEqual(difference, {'pi_lr_scale'})
+        self.assertEqual(configurations[0]['pi_batch'], 1024)
+        self.assertEqual(configurations[0]['wm_batch'], 2048)
+        self.assertEqual(configurations[0]['planner_batch'], 4096)
+        for invalid in (0, -1):
+            with self.assertRaises(ValueError):
+                override_policy_batch(SimpleNamespace(pi_batch=2048), invalid)
+
     def test_override_follows_saved_config_and_only_changes_actor(self):
         agent = SimpleNamespace(lr=.0001, pi_lr_scale=1., planner_lr=.0001)
         inherit_agent_config(agent, dict(lr=.0002, pi_lr_scale=.5, planner_lr=.0001))

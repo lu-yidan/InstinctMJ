@@ -99,6 +99,14 @@ When moving runs to another host, copy the checkpoint, matching
 learner setting. Keep hardware-specific repeats separate, and train both arms
 of a controlled comparison on the same host.
 
+If the policy update exceeds GPU memory, `run_stages.py --pi-batch 1024`
+overrides only the imagined-start batch after restoring checkpoint settings.
+Environment count, world-model/planner batches, replay and handover schedules
+retain their existing values. This changes policy gradient sampling; apply the
+same batch to both experimental arms and evaluate the resulting models anew.
+Omitting the flag preserves the checkpoint's batch. The launch manifest records
+the policy, world-model and planner batches explicitly.
+
 ## Frozen Stage 1 / Stage 2 diagnosis
 
 `diagnose_abc.py` compares three frozen policies, each with its checkpoint's own
