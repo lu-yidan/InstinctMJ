@@ -148,6 +148,8 @@ def main():
     parser.add_argument("--gpu", type=int, default=1)
     parser.add_argument("--clip-regex", default=".*")
     parser.add_argument("--trace-clips", default="php_cfg0080_01,php_cfg0098_00,php_cfg0002_00")
+    parser.add_argument("--trace-training-contacts", action="store_true",
+                        help="Record the actual force/point inputs used by force_head hindsight labeling")
     args = parser.parse_args()
     if args.episodes <= 0 or args.num_envs < args.episodes:
         parser.error("num-envs must cover at least one complete episode cohort")
@@ -176,7 +178,7 @@ def run(args, outdir):
     from instinct_mj.rl import InstinctRlVecEnvWrapper
     from instinct_mj.rl.acp.runner import GOAL_SLICE, TARGETS_SLICE, PLANNER_PROPRIO, SCAN_DIM, clip_family
     from instinct_mj.rl.acp.sim import ACPSimReader
-    from instinct_mj.rl.acp.planner import AttentionContactPlanner, CONTACT_BODIES
+    from instinct_mj.rl.acp.planner import AttentionContactPlanner, CONTACT_BODIES, CONTACT_LINKS
     from instinct_mj.tasks.registry import load_env_cfg, load_env_cls, load_instinct_rl_cfg, load_runner_cls
 
     torch.set_grad_enabled(False)
@@ -235,6 +237,13 @@ def run(args, outdir):
         runner.load(checkpoint)
         runner.motion, runner.kin, runner.scanner, runner.mdp = runner.build_analytic_mdp()
         runner.reader = ACPSimReader(env)
+        if args.trace_training_contacts:
+            if runner.cfg["contact_detect"] != "force_head":
+                raise ValueError("Training-contact tracing currently requires contact_detect=force_head")
+            runner.sdf = None
+            sensor = env.scene["acp_contact_points"]
+            runner.contact_point_ids = [sensor.primary_names.index(name) for name in CONTACT_LINKS]
+            runner.last_contact_pos = torch.zeros(N, 9, 3, device=device)
         mb = next(iter(env.scene["motion_reference"].motion_buffers.values()))
         runner.motion_names = [Path(path).stem for path in mb._all_motion_files]
         env.curriculum_manager.get_term_cfg("episode_start").func.mode = "start"
@@ -429,6 +438,17 @@ def run(args, outdir):
                              "actions": cpu(actions[trace_ids]), "same_state_counterfactual_actions": cpu(counter_actions[trace_ids]),
                              "measured_contact": cpu(runner.reader.contact()[trace_ids]), "reference_contact_flags": cpu(runner.motion.flag(f, phase)[trace_ids]),
                              "active": np.ones(count, bool)})
+        if args.trace_training_contacts:
+            link_pos, link_rot = runner.kin.forward(*S)[:2]
+            force_z, contact_pos = runner.contact_measurement(link_pos[:, :9], env.episode_length_buf == 0, link_rot[:, :9])
+            scanner = env.scene["height_scanner"]
+            quat = scanner.estimated_quat_w
+            est_yaw = torch.atan2(2 * (quat[:, 0] * quat[:, 3] + quat[:, 1] * quat[:, 2]),
+                                  1 - 2 * (quat[:, 2].square() + quat[:, 3].square()))
+            append_arrays(trace, {"training_contact_force_z": cpu(force_z[trace_ids]),
+                                  "training_contact_pos_w": cpu(contact_pos[trace_ids]),
+                                  "training_estimated_pelvis_pos_w": cpu(scanner.estimated_pos_w[trace_ids]),
+                                  "training_estimated_pelvis_yaw": cpu(est_yaw[trace_ids])})
         return trace_ids
 
     per_batch = N // E
@@ -592,6 +612,8 @@ def run(args, outdir):
                   "gait_cycle": "Measured left/right foot rising edges, separately for B and C; complete flag false when sequence boundaries censor an edge."},
               "goal_semantics": "Original native goal updater and U(.5,1.5) sampling retained. Only batch initial RNG/actual states are paired; later world goals may diverge through native reset/RNG history. Local goals always use each variant's own pelvis pose.",
               "scope": "Training metadata only; holdout is never loaded; no learning or sidecar mutations."}
+    if args.trace_training_contacts:
+        schema["training_contact_trace"] = "Exact force_head contact_measurement() inputs, strongest solver contact point with last-point fallback, pre-action; use label_episode() defaults for hindsight labels. Estimated pelvis pose is the scanner pose used by training."
     initial_values = {key: np.concatenate(value, axis=0) for key, value in initial_arrays.items()}
     np.savez_compressed(outdir / "initial_states.npz", **initial_values)
     if trace:

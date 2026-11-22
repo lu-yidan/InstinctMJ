@@ -852,6 +852,7 @@ class ACPRunner:
         self.recorder.step(
             proprio=obs_pre[:, :PLANNER_PROPRIO], goal=obs_pre[:, GOAL_SLICE], points=planner_obs_pre.view(-1, SCAN_DIM, 3),
             contact_force_z=force_z, body_pos_w=contact_pos, pelvis_pos_w=est_pos, pelvis_yaw=est_yaw, **self.recorder_fields(progress, ctx),
+            reference_contacts=motion.flag(f, phase) if self.cfg.get("planner_seed_initial_support", False) else None,
         )  # fmt: skip
 
     def wm_update(self):

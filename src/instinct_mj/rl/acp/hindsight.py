@@ -14,11 +14,14 @@ def label_episode(
     min_segment: int = 10,
     horizon: int = 75,
     footprint: tuple[tuple[float, float], tuple[float, float]] = ((-0.8, 0.8), (-0.5, 0.5)),
+    reference_contacts: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """contact_force_z (T, 9), body_pos_w (T, 9, 3), base_pos_w (T, 3), base_yaw (T,), all at 50 Hz. ``contact_force_z`` is the vertical contact force [N] (paper: Fz > 1 N);
     with ``contact_detect = "sdf"`` the runner passes 2 x the contact indicator ``d_b < d_on_b`` of the same signed-distance function the env rewards use, which exceeds the
     1 N threshold exactly where the body is in contact (and ``body_pos_w`` is the terrain point closest to the body, see ``ACPRunner.contact_measurement``).
 
+    Optional reference_contacts (T, 9) identifies initial reference support so
+    force-sensor settling can join that initial segment (reference episodes only).
     Returns target_pos (T, 9, 3) in the gravity-aligned, yaw-rotated, base-centered frame of each step and
     target_flag (T, 9). The target of step t is the position at the first contact onset in (t, t + horizon]."""
     T, nb = contact_force_z.shape
@@ -29,6 +32,17 @@ def label_episode(
     run_id = torch.cumsum((contact & ~prev).long(), dim=0) * contact  # 0 = no contact
     counts = torch.zeros(T + 1, nb, dtype=torch.long, device=dev).scatter_add_(0, run_id, torch.ones_like(run_id))
     keep = contact & (counts.gather(0, run_id) >= min_segment)
+    if reference_contacts is not None:
+        if reference_contacts.shape != contact.shape:
+            raise ValueError("reference_contacts must match contact_force_z shape")
+        # A force sensor starts empty after reset. Its first sustained contact
+        # during the reference's INITIAL support is settling, not a new step.
+        # Bridge only that leading gap; an initially swinging foot or a contact
+        # after the first reference liftoff retains its genuine first landing.
+        prefix = reference_contacts.long().cumprod(dim=0).bool()
+        first = torch.where(keep, torch.arange(T, device=dev)[:, None], T).amin(dim=0)
+        initial_support = prefix.gather(0, first.clamp(max=T - 1)[None]).squeeze(0) & (first < T)
+        keep = keep | ((torch.arange(T, device=dev)[:, None] < first[None]) & initial_support[None])
     onset = keep & ~torch.cat([torch.zeros_like(keep[:1]), keep[:-1]])
     # next onset strictly after t: reverse cumulative min over the onset indices
     idx = torch.arange(T, device=dev)[:, None].expand(T, nb)

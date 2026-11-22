@@ -96,6 +96,7 @@ class Episode:
     tile: int
     num_steps: int
     """Steps of the whole episode (the stored segment holds the first ``min(num_steps, max_steps)``)."""
+    reference_contacts: torch.Tensor | None = None
 
     @property
     def success(self) -> bool:
@@ -113,7 +114,8 @@ class Episode:
         if not self.is_goal or self.near_idx < 0 or self.near_idx >= self.proprio.shape[0]:
             return self
         L = self.near_idx
-        return Episode(**{**self.__dict__, **{k: getattr(self, k)[:L] for k in _STEP_KEYS}})
+        return Episode(**{**self.__dict__, **{k: getattr(self, k)[:L] for k in _STEP_KEYS},
+                          "reference_contacts": self.reference_contacts[:L] if self.reference_contacts is not None else None})
 
 
 _STEP_KEYS = ("proprio", "goal", "points", "contact_force_z", "body_pos_w", "pelvis_pos_w", "pelvis_yaw")
@@ -151,6 +153,7 @@ class EpisodeRecorder:
         self.near_idx = torch.full((num_envs,), -1, dtype=torch.long, device=device)
         self.init_xy = torch.zeros(num_envs, **f32)
         self.work = torch.zeros(num_envs, **f32)
+        self.reference_contacts = None
 
     @torch.no_grad()
     def step(
@@ -169,6 +172,7 @@ class EpisodeRecorder:
         work_power: torch.Tensor | None = None,
         terrain_type: torch.Tensor | None = None,
         tile: torch.Tensor | None = None,
+        reference_contacts: torch.Tensor | None = None,
     ) -> None:
         """Append one control step for all envs. Planner inputs are those of the observation the action was computed from; forces,
         positions, progress (``phase`` for reference envs, ``goal_xy`` / ``goal_dz`` for goal envs) are measured after the step."""
@@ -195,6 +199,10 @@ class EpisodeRecorder:
             self.work = self.work + torch.where(is_goal, work_power.to(self.device, torch.float32), torch.zeros_like(self.work))
         # stored segment: the first T steps
         rows = (c < self.T).nonzero(as_tuple=False).squeeze(-1)
+        if reference_contacts is not None and self.reference_contacts is None:
+            self.reference_contacts = torch.zeros(self.N, self.T, NUM_BODIES, dtype=torch.bool, device=self.device)
+        if self.reference_contacts is not None and reference_contacts is None:
+            raise ValueError("reference_contacts must be supplied consistently during recording")
         if len(rows) > 0:
             t = c[rows]
             self.proprio[rows, t] = proprio[rows].to(self.proprio.dtype)
@@ -204,6 +212,8 @@ class EpisodeRecorder:
             self.body_pos[rows, t] = body_pos_w[rows].to(torch.float32)
             self.pelvis[rows, t] = pelvis_pos_w[rows].to(torch.float32)
             self.yaw[rows, t] = pelvis_yaw[rows].to(torch.float32)
+            if reference_contacts is not None:
+                self.reference_contacts[rows, t] = reference_contacts[rows].bool()
         self.count = c + 1
 
     @torch.no_grad()
@@ -226,6 +236,7 @@ class EpisodeRecorder:
                 body_pos_w=self.body_pos[e, :L], pelvis_pos_w=self.pelvis[e, :L], pelvis_yaw=self.yaw[e, :L], is_goal=bool(g),
                 start_phase=sp, end_phase=mp, min_xy_ok=mx, near_idx=int(ni), init_xy=ix, work=w, terrain_type=int(tt), tile=int(ti),
                 num_steps=int(n),
+                reference_contacts=self.reference_contacts[e, :L].clone() if self.reference_contacts is not None else None,
             )  # fmt: skip
             if only_successful and not ep.success:
                 continue
@@ -244,6 +255,8 @@ class EpisodeRecorder:
 @torch.no_grad()
 def label_episode_samples(ep: Episode, **label_kwargs) -> dict[str, torch.Tensor]:
     """Hindsight labels of one (already truncated) episode as a replay batch."""
+    if not ep.is_goal and ep.reference_contacts is not None:
+        label_kwargs = {**label_kwargs, "reference_contacts": ep.reference_contacts}
     target_pos, target_flag = label_episode(ep.contact_force_z, ep.body_pos_w, ep.pelvis_pos_w, ep.pelvis_yaw, **label_kwargs)
     return dict(proprio=ep.proprio.float(), goal=ep.goal.float(), points=ep.points.float(), target_pos=target_pos, target_flag=target_flag)
 

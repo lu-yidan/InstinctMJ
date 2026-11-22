@@ -230,6 +230,8 @@ class ACPRunnerCfg:
     planner_success_only: bool = True
     """Keep only successful episodes for the planner (paper filter). False: label every episode, a test switch for runs whose tracker
     does not finish clips yet (default True)."""
+    planner_seed_initial_support: bool = False
+    """Reference episodes: treat the first sustained sensor contact within initial reference support as settling. Goal labels remain unchanged."""
     # ---- official HybridRobotics/supermimic: the remaining parameters ----
     wm_nominal: str = "0.01,0.02,0.1,3.14"
     """Nominal errors of the Bryson loss on the official gencoord loss blocks: root position [m], root rotation [rad] (rotation matrix x sqrt(1/2)), joint position [rad], joint

@@ -37,7 +37,7 @@ STAGE_FIELDS = {
     "contact_source", "train_planner", "restart_iteration", "wm_only_iters",
     "eta_obs_start_iter", "eta_rew_start_iter", "eta_ann_iters",
     "planner_updates_per_iter", "lazy_exact_heightmap", "experiment_name",
-    "run_name", "max_iterations", "save_interval", "log_interval", "load_run", "freeze_tracker",
+    "run_name", "max_iterations", "save_interval", "log_interval", "load_run", "freeze_tracker", "planner_seed_initial_support",
     "load_checkpoint", "resume", "device", "profile_phases",
 }
 
@@ -125,6 +125,8 @@ def main() -> int:
     parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--planner-refit", action="store_true",
                         help="Stage 2 only: frozen actor/normalizer, reference-contact collection, planner learning")
+    parser.add_argument("--seed-initial-support", action="store_true",
+                        help="Reference episodes: exclude initial support settling from new-contact labels")
     parser.add_argument("--gpu", type=int, default=0)
     args = parser.parse_args()
     dataset, run_dir = args.dataset.expanduser().resolve(), args.run_dir.expanduser().resolve()
@@ -138,6 +140,8 @@ def main() -> int:
         parser.error("Stage 2/3 require a previous-stage checkpoint and ACP sidecar")
     if args.planner_refit and args.mode != "stage2":
         parser.error("--planner-refit requires stage2 and its checkpoint/sidecar")
+    if args.seed_initial_support and args.mode not in ("stage2", "stage3"):
+        parser.error("--seed-initial-support requires stage2 or stage3")
     if args.num_envs is not None and args.num_envs <= 0:
         parser.error("--num-envs must be positive")
     if args.iterations is not None and args.iterations <= 0:
@@ -196,6 +200,7 @@ def main() -> int:
         cfg.agent.resume = True
         _RESUME_CHECKPOINT = checkpoint
     cfg.agent.freeze_tracker = args.planner_refit
+    cfg.agent.planner_seed_initial_support = args.seed_initial_support
     if args.planner_refit:
         cfg.agent.contact_source = "reference"
         cfg.agent.train_planner = True
@@ -235,6 +240,7 @@ def main() -> int:
                     inherited_agent_sha256=sha256(inherited_agent) if inherited_agent else None,
                     resume_checkpoint=str(args.resume_checkpoint) if args.resume_checkpoint else None,
                     planner_refit=args.planner_refit,
+                    seed_initial_support=args.seed_initial_support,
                     collection_contact_source=cfg.agent.contact_source)
     (run_dir / "launch_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({k: v for k, v in manifest.items() if k != "dataset_files"}, indent=2), flush=True)

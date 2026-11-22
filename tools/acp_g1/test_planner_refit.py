@@ -35,9 +35,10 @@ class PlannerRefitTests(unittest.TestCase):
             verify_frozen_tracker(self.saved, changed)
 
     def test_freeze_is_explicit_for_each_new_run(self):
-        target = SimpleNamespace(freeze_tracker=False, lr=.1)
-        inherit_agent_config(target, {"freeze_tracker": True, "lr": .2})
+        target = SimpleNamespace(freeze_tracker=False, planner_seed_initial_support=False, lr=.1)
+        inherit_agent_config(target, {"freeze_tracker": True, "planner_seed_initial_support": True, "lr": .2})
         self.assertFalse(target.freeze_tracker)
+        self.assertFalse(target.planner_seed_initial_support)
         self.assertEqual(target.lr, .2)
 
 

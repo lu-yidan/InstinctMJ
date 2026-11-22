@@ -133,6 +133,10 @@ Afterward the closed loops run independently: native failures/resets can change
 later world-goal sampling, which is recorded, and local goals always use each
 robot's own pose. No common local-goal vector or external goal schedule is forced.
 
+`--trace-training-contacts` additionally records the exact force-head hindsight
+inputs: solver force history, contact points with the training fallback and the
+estimated pelvis pose. This opt-in trace currently requires `force_head` mode.
+
 `A.paper.json`, `B.paper.json`, `C.paper.json` and `source_macros.json` separate
 source-macro success from the mean over windows. `pairing.json` records strict
 initial-state/RNG checks and the first later world-goal divergences.
@@ -167,3 +171,11 @@ inherited silently by subsequent ordinary runs. `--iterations` remains the total
 iteration target, for example 4000 when resuming at 3000 for 1000 more updates.
 Always evaluate C with full planner takeover afterward. No formal gate or stage
 advance follows from this experimental mode by itself.
+
+`--seed-initial-support` enables an experimental reset-label correction for
+reference episodes. Their first sustained force contact, when it occurs during
+the reference's initial support, joins the initial contact segment. The next-new
+contact label then selects the following landing. A foot initially swinging or
+landing after the initial reference liftoff keeps its first genuine contact.
+Goal-episode labels retain their original behavior. This option is explicit for
+each run and is recorded in the launch manifest.
