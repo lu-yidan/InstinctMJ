@@ -664,7 +664,7 @@ class ACPRunner:
                 est_pos, est_yaw = sensor.estimated_pos_w.clone(), yaw_of_quat(sensor.estimated_quat_w)
                 force_z, contact_pos = self.contact_measurement(lp0, ep_step == 0, fk[1])
             wm_cmd = obs_in[:, TARGETS_SLICE].clone() if self.wm_ref_contacts else None  # the contact command that was actually delivered to the tracker
-            if not defer_norm:
+            if not defer_norm and not self.cfg.get("freeze_tracker", False):
                 self.pol_norm.update(obs_in)
             a = self.ac.act_inference(self.pol_norm(obs_in))
             a = torch.clamp(a + self.action_noise_std * torch.randn_like(a), -20, 20)
@@ -764,7 +764,8 @@ class ACPRunner:
                 stats["done"].append(done.float().sum())
         # Keep sequential updates to preserve existing max-count boundary behavior.
         for obs_real, wm_in_real in pending_norm:
-            self.pol_norm.update(obs_real)
+            if not self.cfg.get("freeze_tracker", False):
+                self.pol_norm.update(obs_real)
             self.wm.in_norm.update(wm_in_real)
 
     @torch.no_grad()
@@ -1345,7 +1346,7 @@ class ACPRunner:
                                        f"window in the replay buffer: no world-model / policy update is possible. Episode lengths in the replay buffer: {self.buffer.episode_length_stats()}")
                 continue
             self._skipped_streak = 0
-            if it >= c["wm_only_iters"]:  # (no policy update without a world-model update)
+            if it >= c["wm_only_iters"] and not c.get("freeze_tracker", False):  # no policy update without a world-model update
                 for _ in range(c["policy_updates_per_iter"]):
                     pl, vl, ir, gn, surv, terms = self.policy_update()
                     agg["pi"].append(pl), agg["v"].append(vl), agg["ir"].append(ir), agg["gn"].append(gn), agg["surv"].append(surv)

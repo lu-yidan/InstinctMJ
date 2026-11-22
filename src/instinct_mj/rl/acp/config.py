@@ -135,6 +135,8 @@ class ACPRunnerCfg:
     """Multiplier of the actor learning rate only (``lr`` is shared by the world model, critic and termination head; default 1)."""
     policy_updates_per_iter: int = 1
     """Policy (BPTT) updates per iteration, each on fresh imagination starts (default 1)."""
+    freeze_tracker: bool = False
+    """Planner refit: keep actor and policy-normalizer tensors fixed and skip policy/critic updates. World-model and planner learning continue."""
     imagine_action_noise: float = 0.0
     """Std of the Gaussian noise added to the actions inside the imagination of the policy update (default 0: the Stage 1 run). > 0 trains the actor on
     the expectation over perturbed rollouts (randomized smoothing): the gradient through the contact-rich dynamics (grasps, foot placement on edges) is

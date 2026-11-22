@@ -37,7 +37,7 @@ STAGE_FIELDS = {
     "contact_source", "train_planner", "restart_iteration", "wm_only_iters",
     "eta_obs_start_iter", "eta_rew_start_iter", "eta_ann_iters",
     "planner_updates_per_iter", "lazy_exact_heightmap", "experiment_name",
-    "run_name", "max_iterations", "save_interval", "log_interval", "load_run",
+    "run_name", "max_iterations", "save_interval", "log_interval", "load_run", "freeze_tracker",
     "load_checkpoint", "resume", "device", "profile_phases",
 }
 
@@ -52,6 +52,21 @@ def sha256(path: Path) -> str:
 
 def git(*args: str) -> str:
     return subprocess.check_output(["git", "-C", str(REPO), *args], text=True).strip()
+
+
+def verify_frozen_tracker(before: dict, after: dict) -> int:
+    """Reject any change to actor or policy normalization, including counts."""
+    import torch
+    checked = 0
+    for group in ("model_state_dict", "policy_normalizer_state_dict"):
+        a, b = before[group], after[group]
+        if a.keys() != b.keys():
+            raise ValueError(f"Frozen tracker keys changed: {group}")
+        for name in a:
+            if a[name].dtype != b[name].dtype or not torch.equal(a[name], b[name]):
+                raise ValueError(f"Frozen tracker tensor changed: {group}.{name}")
+            checked += 1
+    return checked
 
 
 def inherit_agent_config(target, saved: dict) -> None:
@@ -108,6 +123,8 @@ def main() -> int:
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--planner-refit", action="store_true",
+                        help="Stage 2 only: frozen actor/normalizer, reference-contact collection, planner learning")
     parser.add_argument("--gpu", type=int, default=0)
     args = parser.parse_args()
     dataset, run_dir = args.dataset.expanduser().resolve(), args.run_dir.expanduser().resolve()
@@ -119,6 +136,8 @@ def main() -> int:
     _RUN_DIR = run_dir
     if args.mode in ("stage2", "stage3") and args.resume_checkpoint is None:
         parser.error("Stage 2/3 require a previous-stage checkpoint and ACP sidecar")
+    if args.planner_refit and args.mode != "stage2":
+        parser.error("--planner-refit requires stage2 and its checkpoint/sidecar")
     if args.num_envs is not None and args.num_envs <= 0:
         parser.error("--num-envs must be positive")
     if args.iterations is not None and args.iterations <= 0:
@@ -167,6 +186,8 @@ def main() -> int:
             parser.error("Stage 3 requires a checkpoint containing a trained planner")
         if args.mode == "stage2" and (saved.get("infos") or {}).get("stage") == 3:
             parser.error("a Stage 3 checkpoint cannot initialize Stage 2")
+        if args.planner_refit and not saved.get("has_planner", False):
+            parser.error("--planner-refit requires an existing Stage 2 planner")
         if args.mode in ("stage1", "smoke", "preflight") and saved.get("has_planner", False):
             parser.error("Stage 1 cannot resume a checkpoint from a later stage")
         inherit_agent_config(cfg.agent, yaml.safe_load(inherited_agent.read_text()))
@@ -174,6 +195,12 @@ def main() -> int:
         cfg.agent.load_checkpoint = checkpoint.name
         cfg.agent.resume = True
         _RESUME_CHECKPOINT = checkpoint
+    cfg.agent.freeze_tracker = args.planner_refit
+    if args.planner_refit:
+        cfg.agent.contact_source = "reference"
+        cfg.agent.train_planner = True
+        cfg.agent.cuda_graph_policy = False
+        cfg.agent.compile_policy = False
     cfg.agent.heightmap_cache_dir = "/root/autodl-tmp/acp-g1/cache/heightmaps"
     cfg.agent.device = "cuda:0"
     diagnostic = args.mode in ("smoke", "preflight")
@@ -206,19 +233,31 @@ def main() -> int:
                     total_iterations=cfg.agent.max_iterations,
                     inherited_agent_config=str(inherited_agent) if inherited_agent else None,
                     inherited_agent_sha256=sha256(inherited_agent) if inherited_agent else None,
-                    resume_checkpoint=str(args.resume_checkpoint) if args.resume_checkpoint else None)
+                    resume_checkpoint=str(args.resume_checkpoint) if args.resume_checkpoint else None,
+                    planner_refit=args.planner_refit,
+                    collection_contact_source=cfg.agent.contact_source)
     (run_dir / "launch_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({k: v for k, v in manifest.items() if k != "dataset_files"}, indent=2), flush=True)
     os.chdir(REPO)
     started = time.monotonic()
     run_train(task, cfg, run_dir)
     import torch
+    freeze_check = None
+    if args.planner_refit:
+        final_checkpoint = run_dir / f"model_{cfg.agent.max_iterations}.pt"
+        after = torch.load(final_checkpoint, map_location="cpu", weights_only=True)
+        freeze_check = dict(tensors_checked=verify_frozen_tracker(saved, after),
+                            source_checkpoint=str(checkpoint), source_sha256=sha256(checkpoint),
+                            final_checkpoint=str(final_checkpoint), final_sha256=sha256(final_checkpoint),
+                            actor_and_policy_normalizer_bitwise_unchanged=True)
+        (run_dir / "tracker_freeze_check.json").write_text(json.dumps(freeze_check, indent=2) + "\n")
     result = dict(elapsed_seconds=time.monotonic() - started,
                   max_memory_allocated_gib=torch.cuda.max_memory_allocated() / 2**30,
                   max_memory_reserved_gib=torch.cuda.max_memory_reserved() / 2**30,
                   gpu_total_memory_gib=torch.cuda.get_device_properties(0).total_memory / 2**30,
                   checkpoints=sorted(p.name for p in run_dir.glob("model_*.pt")),
-                  sidecars=sorted(p.name for p in run_dir.glob("acp_state_*.pt")))
+                  sidecars=sorted(p.name for p in run_dir.glob("acp_state_*.pt")),
+                  frozen_tracker_verified=freeze_check is not None)
     (run_dir / "run_result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2), flush=True)
     return exit_status(0)["returncode"]

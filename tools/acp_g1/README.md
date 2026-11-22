@@ -154,3 +154,16 @@ the training eta schedule reaches one; record training eta separately. A/B
 differences concern the actor and its own normalizer together, not the actor
 alone. Interpret closed-loop attribution alongside recorded goal divergence and
 same-state counterfactual traces.
+
+## Controlled planner refit
+
+For a Stage 2 checkpoint whose reference bypass still works, `run_stages.py
+stage2 --planner-refit` freezes the actor and its policy normalizer, collects with
+reference contacts, and continues planner/world-model learning from the matching
+checkpoint and ACP sidecar. Policy/critic updates are skipped. The final actor
+and normalizer tensors (including counts) must be bitwise unchanged, or the run
+fails; the receipt is `tracker_freeze_check.json`. This opt-in mode is not
+inherited silently by subsequent ordinary runs. `--iterations` remains the total
+iteration target, for example 4000 when resuming at 3000 for 1000 more updates.
+Always evaluate C with full planner takeover afterward. No formal gate or stage
+advance follows from this experimental mode by itself.
