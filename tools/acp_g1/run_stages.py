@@ -104,6 +104,16 @@ def override_policy_batch(agent, value: int | None) -> None:
         agent.pi_batch = value
 
 
+def override_reward_handover_start(agent, value: int | None) -> None:
+    """Delay reward takeover independently of the observation schedule."""
+    if value is not None:
+        if type(value) is not int or value < 0:
+            raise ValueError("reward-handover-start must be a nonnegative integer")
+        if agent.contact_source == "mixed" and value <= agent.eta_obs_start_iter:
+            raise ValueError("reward handover must start after observation handover")
+        agent.eta_rew_start_iter = value
+
+
 def override_planner_experiment(agent, planner_lr=None, hold_at=None, release_hold=False, freeze=None):
     """Explicit Stage 2 controls, applied after the checkpoint config is restored."""
     if planner_lr is not None:
@@ -176,6 +186,8 @@ def main() -> int:
     parser.add_argument("--pi-batch", type=int,
                         help="Policy imagination batch after resume; retain the saved value unless explicitly set")
     parser.add_argument("--planner-lr", type=float, help="Stage 2 planner Adam LR after optimizer resume; actor/WM/critic LRs unchanged")
+    parser.add_argument("--reward-handover-start", type=int,
+                        help="Stage 2: override only the reward eta start after resume; observation eta keeps its stage schedule")
     handover = parser.add_mutually_exclusive_group()
     handover.add_argument("--handover-hold-iteration", type=int, help="Stage 2: cap the eta schedule clock, preserving actual iteration counters")
     handover.add_argument("--release-handover-hold", action="store_true", help="Stage 2: resume normal eta schedule progression")
@@ -200,7 +212,8 @@ def main() -> int:
     if args.planner_refit and args.mode != "stage2":
         parser.error("--planner-refit requires stage2 and its checkpoint/sidecar")
     if any((args.planner_lr is not None, args.handover_hold_iteration is not None,
-            args.release_handover_hold, args.freeze_planner is not None)) and args.mode != "stage2":
+            args.release_handover_hold, args.freeze_planner is not None,
+            args.reward_handover_start is not None)) and args.mode != "stage2":
         parser.error("planner experiment controls require stage2")
     if args.planner_refit and args.freeze_planner:
         parser.error("planner-refit and freeze-planner cannot be combined")
@@ -218,6 +231,8 @@ def main() -> int:
         parser.error("--planner-lr must be finite and positive")
     if args.handover_hold_iteration is not None and args.handover_hold_iteration < 0:
         parser.error("--handover-hold-iteration must be nonnegative")
+    if args.reward_handover_start is not None and args.reward_handover_start < 0:
+        parser.error("--reward-handover-start must be nonnegative")
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     os.environ["ACP_DATASET"] = str(dataset)
     os.environ.setdefault("MUJOCO_GL", "egl")
@@ -280,6 +295,7 @@ def main() -> int:
         cfg.agent.freeze_planner = False
     override_planner_experiment(cfg.agent, args.planner_lr, args.handover_hold_iteration,
                                 args.release_handover_hold, args.freeze_planner)
+    override_reward_handover_start(cfg.agent, args.reward_handover_start)
     if args.planner_refit and cfg.agent.freeze_planner:
         parser.error("planner-refit cannot use a frozen planner; pass --no-freeze-planner to release it")
     cfg.agent.planner_seed_initial_support = args.seed_initial_support
@@ -328,6 +344,9 @@ def main() -> int:
                     seed_initial_support=args.seed_initial_support,
                     actor_lr_scale=cfg.agent.pi_lr_scale,
                     planner_lr=cfg.agent.planner_lr,
+                    eta_obs_start_iter=cfg.agent.eta_obs_start_iter,
+                    eta_rew_start_iter=cfg.agent.eta_rew_start_iter,
+                    eta_ann_iters=cfg.agent.eta_ann_iters,
                     handover_hold_iteration=cfg.agent.handover_hold_iteration,
                     freeze_planner=cfg.agent.freeze_planner,
                     policy_batch_size=cfg.agent.pi_batch,

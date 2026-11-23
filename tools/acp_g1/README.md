@@ -248,3 +248,15 @@ also verify the saved planner update counter. `--no-freeze-planner` releases it.
 These controls are Stage 2 only, default off, recorded in launch manifests and
 inherited on same-stage resumes. Entering Stage 3 clears the hold/freeze controls.
 They do not change formal acceptance thresholds or authorize stage advancement.
+
+`--reward-handover-start 100000` explicitly overrides only `eta_rew_start_iter`
+after resume. During a bounded 4000→5000 run it keeps the reference reward
+objective (`eta_rew=0`), while the existing observation handover still advances
+from 0.75 to 1. This isolates reward handover from observation handover. Saved
+weights, optimizer history, real iteration counters and other schedules retain
+their existing behavior. The start must be later than `eta_obs_start_iter` in
+mixed mode. This Stage 2 override is recorded with both starts and the ramp in
+the manifest. Schedule fields follow the selected stage by default, so specify
+this option again to retain the delayed reward on another resume. Stage 3 uses
+its own schedule. Diagnostic C still uses full planner takeover; formal gates
+remain unchanged.

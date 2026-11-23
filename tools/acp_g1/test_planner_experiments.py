@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import torch
 
-from run_stages import inherit_agent_config, override_planner_experiment, verify_frozen_planner
+from run_stages import inherit_agent_config, override_planner_experiment, override_reward_handover_start, verify_frozen_planner
 
 # Runner imports initialize Warp. Exercise its actual lightweight methods and
 # the pure Torch trainer without creating a CUDA context or simulator.
@@ -30,6 +30,26 @@ ACPRunner = SimpleNamespace(**{name: namespace[name] for name in ("eta", "planne
 
 
 class PlannerExperimentTests(unittest.TestCase):
+    def test_delayed_reward_preserves_observation_takeover_and_real_clock(self):
+        agent = SimpleNamespace(contact_source="mixed", eta_obs_start_iter=1000,
+            eta_rew_start_iter=3000, eta_ann_iters=4000, handover_hold_iteration=None)
+        override_reward_handover_start(agent, None)
+        self.assertEqual(agent.eta_rew_start_iter, 3000)
+        override_reward_handover_start(agent, 100000)
+        runner = SimpleNamespace(it=4000, cfg=vars(agent))
+        self.assertEqual(ACPRunner.eta(runner), (.75, 0.))
+        runner.it = 5000
+        self.assertEqual(ACPRunner.eta(runner), (1., 0.))
+        self.assertEqual(runner.it, 5000)
+        self.assertEqual(agent.eta_obs_start_iter, 1000)
+
+    def test_invalid_reward_start_is_rejected_without_config_mutation(self):
+        agent = SimpleNamespace(contact_source="mixed", eta_obs_start_iter=1000, eta_rew_start_iter=3000)
+        for value in (-1, 0, 1000, 4000.5, True):
+            with self.assertRaises(ValueError):
+                override_reward_handover_start(agent, value)
+            self.assertEqual(agent.eta_rew_start_iter, 3000)
+
     def test_handover_hold_does_not_reset_training_clock_or_change_other_modes(self):
         runner = SimpleNamespace(it=5000, cfg=dict(contact_source="mixed", eta_obs_start_iter=1000,
             eta_rew_start_iter=3000, eta_ann_iters=4000, handover_hold_iteration=None))
