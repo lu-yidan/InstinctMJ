@@ -62,6 +62,7 @@ def main():
     p.add_argument("--episodes", type=int, default=128)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--gpu", type=int, default=1)
+    p.add_argument("--initial-only", action="store_true", help="Verify cohort restoration without advancing simulation")
     args = p.parse_args()
     if args.episodes < 3:
         p.error("At least three episodes are needed to cover all goal types")
@@ -184,6 +185,10 @@ def main():
             "cohort_sha256":hashlib.sha256(args.cohort.read_bytes()).hexdigest(),
             "source_iteration":ck["iter"], "loaded_clock":runner.it, "role":args.role,
             "agent":agent.to_dict(), "training_updates":0})
+        if args.initial_only:
+            print(json.dumps({"initial_state_sha256":actual_hash, "cohort_restored":not created,
+                              "simulation_steps":0,"training_updates":0}),flush=True)
+            return
 
         n, steps = args.episodes, math.ceil(15. / raw.step_dt)
         active = torch.ones(n, dtype=torch.bool, device=dev)

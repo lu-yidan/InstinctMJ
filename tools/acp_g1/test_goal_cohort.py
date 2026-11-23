@@ -1,5 +1,7 @@
 """Fixed-goal geometry, hold semantics and Stage3 budget regression tests."""
 import unittest
+import ast
+from pathlib import Path
 import numpy as np
 
 from bounded_stage3_train import check_transition
@@ -7,6 +9,25 @@ from diagnose_goal_cohort import fixed_targets, hold_metrics
 
 
 class GoalCohortTests(unittest.TestCase):
+    def test_actual_stage3_load_restarts_stage2_and_keeps_stage3_clock(self):
+        path = Path(__file__).resolve().parents[2] / "src/instinct_mj/rl/acp/stage3_runner.py"
+        tree = ast.parse(path.read_text())
+        cls = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name == "ACPStage3Runner")
+        load = next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name == "load")
+        class Parent:
+            def load(self, checkpoint):
+                self.it = checkpoint["iter"]
+                return checkpoint.get("infos")
+        actual = ast.ClassDef(name="ActualLoad", bases=[ast.Name(id="Parent",ctx=ast.Load())],
+                              keywords=[],body=[load],decorator_list=[])
+        namespace = {"Parent":Parent}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[actual],type_ignores=[])),str(path),"exec"),namespace)
+        runner = namespace["ActualLoad"]();runner.cfg = {"restart_iteration":True}
+        runner.load({"iter":9000,"infos":None,"has_planner":True})
+        self.assertEqual(runner.it,0)
+        runner.load({"iter":1000,"infos":{"stage":3},"has_planner":True})
+        self.assertEqual(runner.it,1000)
+
     def test_targets_rotate_with_pelvis_yaw_and_stop_is_stationary(self):
         spawn = np.tile([10.,20.,.82], (6,1))
         yaw = np.full(6,np.pi/2)

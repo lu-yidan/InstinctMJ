@@ -1,5 +1,39 @@
 # ACP G1 data preparation
 
+## Bounded Stage 3 flat experiment
+
+`bounded_stage3_train.py` is a separate downstream experiment authorized after
+the formal Stage 2 gate failed. It pins the retained native Stage 2 9k model and
+sidecar hashes, starts the Stage 3 clock at zero, checks loaded actor/planner/
+normalizer/WM/reference-critic tensors, and retains default Stage 3 settings:
+predicted contacts, no freezes or handover hold, no extra WM-only phase, and
+500 iterations of Vfs warmup. The run stops at 2,000 iterations and writes
+`model_1000.ready.json` / `model_2000.ready.json` only after the full Stage 3
+checkpoint and sidecar have been saved. It never advances the formal pipeline.
+
+```bash
+python tools/acp_g1/diagnose_goal_cohort.py \
+  --checkpoint /absolute/path/native-stage2/model_9000.pt \
+  --role stage2-baseline --dataset /absolute/path/php-flat \
+  --cohort /absolute/path/trial/cohort42.npz \
+  --output-dir /absolute/path/trial/native9k --gpu 1
+python tools/acp_g1/bounded_stage3_train.py \
+  --checkpoint /absolute/path/native-stage2/model_9000.pt \
+  --dataset /absolute/path/php-flat \
+  --run-dir /absolute/path/new-stage3-run --gpu 0
+```
+
+Evaluate the actual 1k/2k Stage 3 checkpoints with `--role stage3` and the same
+existing cohort file. The diagnostic saves exact initial physics, controls,
+history and goals, then checks the actual initial-state digest for every model.
+Its 128 episodes cover forward, +/-90-degree turn and stationary stop at fixed
+1/1.5/2 m offsets. All run for 15 seconds, reporting arrival, any continuous
+one-second hold, final one-second hold, heading, speed, falls and nonfinite
+failures. Full state/action/contact traces are retained. No training update is
+performed by this evaluator. These paired diagnostic results do not replace
+`eval_goal.py` (which still requires a real Stage 3 checkpoint) or deployment
+MuJoCo acceptance.
+
 The first training subset comes from the user-selected [PHP training examples
 release](https://github.com/amazon-far/php_parkour/releases/tag/training-motion-examples-v1).
 It is a subset of example inputs, not the complete PHP parkour dataset.
