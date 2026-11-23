@@ -2,6 +2,40 @@
 
 ## Bounded Stage 3 flat experiment
 
+Completed 2026-11-23: one seed=42, 2,048 envs, exactly 2,000 iterations,
+successful exit, 1,643.6 seconds. The original native 9k and sidecar hashes are
+unchanged; the failed formal Stage 2 gate remains failed. This separate trial
+does not promote or rewrite that pipeline result.
+
+| Weight | Arrival / any 1s hold / final 1s hold (cohort42) | Same metrics (cohort43) | Falls / numerical failures, both cohorts |
+|---|---|---|---|
+| Native Stage2 9k | 128 / 123 / 123 of 128 | 128 / 120 / 119 of 128 | 0 / 0 |
+| Stage3 1k | 128 / 128 / 127 of 128 | 128 / 128 / 128 of 128 | 0 / 0 |
+| Stage3 2k | 128 / 128 / 128 of 128 | 128 / 128 / 127 of 128 | 0 / 0 |
+
+Both Stage3 weights held through the final second in 255/256 paired episodes.
+Keep 1k as the current simulation candidate and 2k as a comparison: 2k has no
+consistent advantage, while 1k has lower median heading errors and scored
+128/128 in the separate formal native seed43 evaluation (2k: 127/128; both
+above the unchanged 90% threshold). This is one training seed, not evidence
+of a statistically significant difference between checkpoints. No additional
+training was launched.
+
+Both new bundles passed 300-frame native/ONNX parity, independent 939-input
+reconstruction, and deployment MuJoCo forward/turn/stop tests. Deployment tests
+held the pelvis only during the two-second FixedPose initialization, then
+released it for the complete 15-second ACP test and required the final second
+to satisfy every standing gate. Unsupported open-loop FixedPose fell before
+ACP entry; that failure is retained separately. See the deployment repository's
+`docs/acp_deployment_zh.md` for this explicit initialization condition and the
+static-terrain ray fix. No robot control was started.
+
+Evidence on host 245: `/root/autodl-tmp/acp-g1/diagnostics/stage3-flat-trial-v1`;
+checkpoints and matching sidecars: `/root/autodl-tmp/acp-g1/runs/stage3-flat-from-native9k-v1`.
+The parent workspace keeps `data/acp_g1_reports/stage3_flat_trial_v1/README.md`
+and local weight backups. The selected bundle is `bundle_stage3_1000` inside
+the diagnostic directory. Wrist gains remain explicit simulation examples.
+
 `bounded_stage3_train.py` is a separate downstream experiment authorized after
 the formal Stage 2 gate failed. It pins the retained native Stage 2 9k model and
 sidecar hashes, starts the Stage 3 clock at zero, checks loaded actor/planner/
