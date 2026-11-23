@@ -104,6 +104,33 @@ def override_policy_batch(agent, value: int | None) -> None:
         agent.pi_batch = value
 
 
+def override_planner_experiment(agent, planner_lr=None, hold_at=None, release_hold=False, freeze=None):
+    """Explicit Stage 2 controls, applied after the checkpoint config is restored."""
+    if planner_lr is not None:
+        if not math.isfinite(planner_lr) or planner_lr <= 0:
+            raise ValueError("planner-lr must be finite and positive")
+        agent.planner_lr = planner_lr
+    if hold_at is not None:
+        if not isinstance(hold_at, int) or hold_at < 0 or release_hold:
+            raise ValueError("handover hold must be a nonnegative iteration, exclusive with release")
+        agent.handover_hold_iteration = hold_at
+    if release_hold:
+        agent.handover_hold_iteration = None
+    if freeze is not None:
+        agent.freeze_planner = freeze
+
+
+def verify_frozen_planner(before: dict, after: dict) -> int:
+    import torch
+    a, b = before["planner_state_dict"], after["planner_state_dict"]
+    if a.keys() != b.keys():
+        raise ValueError("Frozen planner keys changed")
+    for name, value in a.items():
+        if value.dtype != b[name].dtype or not torch.equal(value, b[name]):
+            raise ValueError(f"Frozen planner tensor changed: {name}")
+    return len(a)
+
+
 def exit_status(returncode: int, error: str | None = None) -> dict:
     """Publish only checkpoint/sidecar pairs that actually exist."""
     candidates = []
@@ -148,6 +175,12 @@ def main() -> int:
                         help="Override only pi_lr_scale after saved configuration is restored (not the WM/critic/planner LR)")
     parser.add_argument("--pi-batch", type=int,
                         help="Policy imagination batch after resume; retain the saved value unless explicitly set")
+    parser.add_argument("--planner-lr", type=float, help="Stage 2 planner Adam LR after optimizer resume; actor/WM/critic LRs unchanged")
+    handover = parser.add_mutually_exclusive_group()
+    handover.add_argument("--handover-hold-iteration", type=int, help="Stage 2: cap the eta schedule clock, preserving actual iteration counters")
+    handover.add_argument("--release-handover-hold", action="store_true", help="Stage 2: resume normal eta schedule progression")
+    parser.add_argument("--freeze-planner", action=argparse.BooleanOptionalAction, default=None,
+                        help="Stage 2: stop planner optimizer updates while continuing tracker training")
     parser.add_argument("--release-cuda-cache", action=argparse.BooleanOptionalAction, default=None,
                         help="Return unused Torch cache to MuJoCo/Warp between iterations; inherit saved setting when omitted")
     parser.add_argument("--gpu", type=int, default=0)
@@ -166,6 +199,11 @@ def main() -> int:
         parser.error("Stage 2/3 require a previous-stage checkpoint and ACP sidecar")
     if args.planner_refit and args.mode != "stage2":
         parser.error("--planner-refit requires stage2 and its checkpoint/sidecar")
+    if any((args.planner_lr is not None, args.handover_hold_iteration is not None,
+            args.release_handover_hold, args.freeze_planner is not None)) and args.mode != "stage2":
+        parser.error("planner experiment controls require stage2")
+    if args.planner_refit and args.freeze_planner:
+        parser.error("planner-refit and freeze-planner cannot be combined")
     if args.seed_initial_support and args.mode not in ("stage2", "stage3"):
         parser.error("--seed-initial-support requires stage2 or stage3")
     if args.num_envs is not None and args.num_envs <= 0:
@@ -176,6 +214,10 @@ def main() -> int:
         parser.error("--actor-lr-scale must be finite and positive")
     if args.pi_batch is not None and args.pi_batch <= 0:
         parser.error("--pi-batch must be positive")
+    if args.planner_lr is not None and (not math.isfinite(args.planner_lr) or args.planner_lr <= 0):
+        parser.error("--planner-lr must be finite and positive")
+    if args.handover_hold_iteration is not None and args.handover_hold_iteration < 0:
+        parser.error("--handover-hold-iteration must be nonnegative")
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     os.environ["ACP_DATASET"] = str(dataset)
     os.environ.setdefault("MUJOCO_GL", "egl")
@@ -222,6 +264,8 @@ def main() -> int:
             parser.error("a Stage 3 checkpoint cannot initialize Stage 2")
         if args.planner_refit and not saved.get("has_planner", False):
             parser.error("--planner-refit requires an existing Stage 2 planner")
+        if args.freeze_planner and not saved.get("has_planner", False):
+            parser.error("--freeze-planner requires an existing trained planner")
         if args.mode in ("stage1", "smoke", "preflight") and saved.get("has_planner", False):
             parser.error("Stage 1 cannot resume a checkpoint from a later stage")
         inherit_agent_config(cfg.agent, yaml.safe_load(inherited_agent.read_text()))
@@ -231,6 +275,13 @@ def main() -> int:
         _RESUME_CHECKPOINT = checkpoint
     cfg.agent.freeze_tracker = args.planner_refit
     override_actor_lr_scale(cfg.agent, args.actor_lr_scale)
+    if args.mode == "stage3":
+        cfg.agent.handover_hold_iteration = None
+        cfg.agent.freeze_planner = False
+    override_planner_experiment(cfg.agent, args.planner_lr, args.handover_hold_iteration,
+                                args.release_handover_hold, args.freeze_planner)
+    if args.planner_refit and cfg.agent.freeze_planner:
+        parser.error("planner-refit cannot use a frozen planner; pass --no-freeze-planner to release it")
     cfg.agent.planner_seed_initial_support = args.seed_initial_support
     if args.planner_refit:
         cfg.agent.contact_source = "reference"
@@ -276,6 +327,9 @@ def main() -> int:
                     planner_refit=args.planner_refit,
                     seed_initial_support=args.seed_initial_support,
                     actor_lr_scale=cfg.agent.pi_lr_scale,
+                    planner_lr=cfg.agent.planner_lr,
+                    handover_hold_iteration=cfg.agent.handover_hold_iteration,
+                    freeze_planner=cfg.agent.freeze_planner,
                     policy_batch_size=cfg.agent.pi_batch,
                     world_model_batch_size=cfg.agent.wm_batch,
                     planner_batch_size=cfg.agent.planner_batch,
@@ -290,6 +344,7 @@ def main() -> int:
     run_train(task, cfg, run_dir)
     import torch
     freeze_check = None
+    planner_freeze_check = None
     if args.planner_refit:
         final_checkpoint = run_dir / f"model_{cfg.agent.max_iterations}.pt"
         after = torch.load(final_checkpoint, map_location="cpu", weights_only=True)
@@ -298,13 +353,21 @@ def main() -> int:
                             final_checkpoint=str(final_checkpoint), final_sha256=sha256(final_checkpoint),
                             actor_and_policy_normalizer_bitwise_unchanged=True)
         (run_dir / "tracker_freeze_check.json").write_text(json.dumps(freeze_check, indent=2) + "\n")
+    if cfg.agent.freeze_planner:
+        final_checkpoint = run_dir / f"model_{cfg.agent.max_iterations}.pt"
+        after = torch.load(final_checkpoint, map_location="cpu", weights_only=True)
+        planner_freeze_check = dict(tensors_checked=verify_frozen_planner(saved, after),
+                                   source_sha256=sha256(checkpoint), final_sha256=sha256(final_checkpoint),
+                                   planner_bitwise_unchanged=True)
+        (run_dir / "planner_freeze_check.json").write_text(json.dumps(planner_freeze_check, indent=2) + "\n")
     result = dict(elapsed_seconds=time.monotonic() - started,
                   max_memory_allocated_gib=torch.cuda.max_memory_allocated() / 2**30,
                   max_memory_reserved_gib=torch.cuda.max_memory_reserved() / 2**30,
                   gpu_total_memory_gib=torch.cuda.get_device_properties(0).total_memory / 2**30,
                   checkpoints=sorted(p.name for p in run_dir.glob("model_*.pt")),
                   sidecars=sorted(p.name for p in run_dir.glob("acp_state_*.pt")),
-                  frozen_tracker_verified=freeze_check is not None)
+                  frozen_tracker_verified=freeze_check is not None,
+                  frozen_planner_verified=planner_freeze_check is not None)
     (run_dir / "run_result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2), flush=True)
     return exit_status(0)["returncode"]

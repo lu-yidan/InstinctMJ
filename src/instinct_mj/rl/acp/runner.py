@@ -462,7 +462,8 @@ class ACPRunner:
             return 0.0, 0.0
         if c["contact_source"] == "planner":
             return 1.0, 1.0
-        return eta_schedule(self.it, c["eta_obs_start_iter"], c["eta_ann_iters"]), eta_schedule(self.it, c["eta_rew_start_iter"], c["eta_ann_iters"])
+        hold = c.get("handover_hold_iteration")
+        return eta_schedule(self.it, c["eta_obs_start_iter"], c["eta_ann_iters"], hold), eta_schedule(self.it, c["eta_rew_start_iter"], c["eta_ann_iters"], hold)
 
     @torch.no_grad()
     def plan_contacts(self, obs: torch.Tensor, planner_obs: torch.Tensor, eta_obs: float) -> tuple[torch.Tensor, torch.Tensor]:
@@ -496,6 +497,8 @@ class ACPRunner:
 
     def planner_update(self) -> dict | None:
         """One planner iteration on the hindsight replay (ten optimizer steps once the replay holds enough samples), see ``stage2.py``."""
+        if self.cfg.get("freeze_planner", False):
+            return None
         losses = self.planner_trainer.update(self.replay)
         self.planner.eval()
         return losses

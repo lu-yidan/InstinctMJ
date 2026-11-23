@@ -480,16 +480,23 @@ class PlannerTrainer:
         return dict(planner=self.planner.state_dict(), opt=self.opt.state_dict(), num_updates=self.num_updates)
 
     def load_state_dict(self, state: dict) -> None:
+        # Like the actor optimizer, retain the requested LR while restoring
+        # moments and update counters from the source checkpoint.
+        learning_rates = [group["lr"] for group in self.opt.param_groups]
         self.planner.load_state_dict(state["planner"])
         self.opt.load_state_dict(state["opt"])
+        for group, lr in zip(self.opt.param_groups, learning_rates, strict=True):
+            group["lr"] = lr
         self.num_updates = state["num_updates"]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Schedules / mixing
 # ----------------------------------------------------------------------------------------------------------------------
-def eta(u: float, u_start: float, n_ann: float) -> float:
+def eta(u: float, u_start: float, n_ann: float, hold_at: int | None = None) -> float:
     """Eq. (3): 0 for u <= u_start, linear ramp (u - u_start) / n_ann up to u_start + n_ann, 1 afterwards."""
+    if hold_at is not None:
+        u = min(u, hold_at)
     if u <= u_start:
         return 0.0
     if u >= u_start + n_ann:

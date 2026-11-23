@@ -210,11 +210,15 @@ class ACPRunnerCfg:
     default 0, Stage 2 sets it)."""
     eta_ann_iters: int = 1
     """N_ann of Eq. (3): shared transition duration in iterations (ACP-unspecified; default 1, Stage 2 sets it)."""
+    handover_hold_iteration: int | None = None
+    """Optional Stage 2 diagnostic cap on the iteration used by both eta schedules; training/checkpoint counters keep advancing."""
     planner_checkpoint: str = ""
     """Initial weights (``AttentionContactPlanner`` state dict) of the planner when the runner has one ("" = random init, default "")."""
     train_planner: bool = False
     """Record the successful episodes, label them in hindsight and train the planner once per iteration (``stage2.py``); the planner is
     also built (and trained) for ``contact_source`` != "reference" (Stage 2 sets it; Stage 1 default False)."""
+    freeze_planner: bool = False
+    """Keep planner weights/optimizer fixed while tracker, world model, replay and eta schedules continue (Stage 2 diagnostic)."""
     planner_lr: float = 1e-4
     """Adam learning rate of the planner (Table S5; default 1e-4)."""
     planner_updates_per_iter: int = 10

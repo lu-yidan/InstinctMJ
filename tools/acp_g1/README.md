@@ -225,3 +225,26 @@ constructor's LR, including its device tensor for captured updates. Both the
 multiplier and effective actor LR are recorded in the launch manifest. Use an
 independent resumed control run at scale 1 when testing this change, because
 unsaved replay buffers refill on resume.
+
+## Stage 2 handover and planner ablations
+
+After a same-stage resume, `--planner-lr 0.000025` changes only planner Adam LR.
+Its weights, moments and update counter are restored, but the constructor's
+requested LR is retained. Actor, world-model and critic rates are unaffected.
+
+`--handover-hold-iteration 4000` caps the clock used by both eta schedules. With
+the current 1000/3000 starts and 4000-step ramps, this keeps eta_obs=0.75 and
+eta_rew=0.25 while real training/checkpoint counters continue to 5000 or later.
+`--release-handover-hold` removes this cap. The contact-source modes `reference`
+and `planner` still force 0/0 and 1/1, respectively; native diagnostic C still
+uses full planner takeover.
+
+`--freeze-planner` keeps planner weights and optimizer updates fixed while
+tracker/normalizer, world-model learning, replay collection and eta progression
+continue. A trained source planner is required. The launcher verifies its final
+weights bitwise in `planner_freeze_check.json`; experiment controllers should
+also verify the saved planner update counter. `--no-freeze-planner` releases it.
+
+These controls are Stage 2 only, default off, recorded in launch manifests and
+inherited on same-stage resumes. Entering Stage 3 clears the hold/freeze controls.
+They do not change formal acceptance thresholds or authorize stage advancement.
